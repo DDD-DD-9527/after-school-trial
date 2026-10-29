@@ -1,0 +1,16 @@
+{
+  "name": "after-school-trial",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/api & npm run dev --workspace apps/web",
+    "dev:api": "npm run dev --workspace apps/api",
+    "dev:web": "npm run dev --workspace apps/web",
+    "db:init": "npm run db:init --workspace apps/api",
+    "build": "npm run build --workspace apps/web"
+  }
+}

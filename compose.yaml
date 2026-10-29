@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${HOST_PORT:-5280}:8080"
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      TZ: Asia/Shanghai
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中设置随机 JWT_SECRET}
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  app-data:
