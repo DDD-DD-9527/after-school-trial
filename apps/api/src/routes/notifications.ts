@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { db } from '../db.js';
 import { HttpError, getUser, requireAuth } from '../auth.js';
 
-const guard = { preHandler: requireAuth() };
+const guard = { preHandler: requireAuth('admin', 'teacher', 'parent') };
 const num = (v: unknown, f = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : f;

@@ -1,7 +1,12 @@
 import { raw, db } from '../db.js';
 import { hashPassword } from '../auth.js';
+import { initializeTeacherAttendance } from './teacher-attendance.js';
+import { initializeMultiSchool } from './multi-school.js';
 
 const SCHEMA = `
+DROP TABLE IF EXISTS operations_logs;
+DROP TABLE IF EXISTS teacher_attendance_logs;
+DROP TABLE IF EXISTS teacher_attendance;
 DROP TABLE IF EXISTS attendance;
 DROP TABLE IF EXISTS session_changes;
 DROP TABLE IF EXISTS leave_requests;
@@ -229,6 +234,7 @@ const FAMILY = ['张', '李', '王', '刘', '陈', '杨', '赵', '黄', '周', '
 const GIVEN = ['小明', '雨欣', '子轩', '思远', '梓涵', '浩然', '若曦', '宇航', '欣怡', '俊杰', '可欣', '天佑'];
 
 raw.exec(SCHEMA);
+initializeTeacherAttendance(raw);
 
 // 学校
 raw.prepare('INSERT INTO school (id, name, term) VALUES (1, ?, ?)').run('阳光小学', '2026-秋');
@@ -375,7 +381,9 @@ for (const i of [9, 10]) {
 raw.prepare('UPDATE enroll_plan_courses SET enrolled = 8 WHERE id = ?').run(pcHost.id);
 raw.prepare('UPDATE enroll_plan_courses SET enrolled = 2 WHERE id = ?').run(pcGo.id);
 
+initializeMultiSchool(raw);
 console.log('✅ 初始化完成');
+console.log('   运营    13600000000 / ops123456');
 console.log('   管理员  13800000000 / admin123');
 console.log('   教师    13900000001 / 123456');
 console.log('   家长    13700000001 / 123456');

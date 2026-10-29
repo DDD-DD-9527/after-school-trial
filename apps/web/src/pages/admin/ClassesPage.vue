@@ -4,8 +4,11 @@ import { api } from '../../lib/api';
 import { toast } from '../../lib/toast';
 import Modal from '../../ui/Modal.vue';
 import AppSelect from '../../ui/AppSelect.vue';
+import AppIcon from '../../ui/AppIcon.vue';
 
 const rows = ref<any[]>([]);
+const loading = ref(false);
+const error = ref('');
 const teachers = ref<any[]>([]);
 const show = ref(false);
 const editing = ref<any>(null);
@@ -17,10 +20,15 @@ const teacherOptions = computed(() => [
 ]);
 
 async function load() {
-  rows.value = await api.get('/api/admin/classes');
+  loading.value = true;
+  error.value = '';
+  try { rows.value = await api.get('/api/admin/classes'); }
+  catch (e: any) { error.value = e.message || '班级资料加载失败'; }
+  finally { loading.value = false; }
 }
 onMounted(async () => {
-  teachers.value = await api.get('/api/admin/teachers');
+  try { teachers.value = await api.get('/api/admin/teachers'); }
+  catch (e: any) { toast('教师选项加载失败：' + e.message, 'error'); }
   await load();
 });
 
@@ -50,23 +58,25 @@ async function save() {
 
 <template>
   <div>
-    <div class="mb-4 flex items-center justify-between">
-      <div class="text-[20px] font-semibold">班级</div>
-      <button class="btn btn-primary btn-sm" @click="openNew">新增班级</button>
+    <div class="page-heading">
+      <div><div class="eyebrow">基础资料</div><h1 class="page-title">班级档案</h1><p class="page-description">维护行政班与班主任，帮助学生资料和报名名单准确归属。</p></div>
+      <button class="btn btn-primary" @click="openNew"><AppIcon name="plus" :size="17" />新增班级</button>
     </div>
     <div class="card">
-      <table class="table-base">
+      <div class="section-heading border-b border-line px-5 py-4"><div><h2 class="section-title">行政班级</h2><p class="section-subtitle">行政班与课程教学班分开管理。</p></div><span class="text-[13px] text-ink-3">{{ loading || error ? '—' : rows.length }} 个班级</span></div>
+      <div v-if="error" class="flex items-center justify-between gap-3 p-5 text-[13px]" role="alert"><span class="text-danger">{{ error }}</span><button class="btn btn-secondary btn-sm" @click="load">重试</button></div>
+      <div class="overflow-x-auto"><table class="table-base min-w-[560px]">
         <thead><tr><th>年级</th><th>班级</th><th>班主任</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in rows" :key="r.id">
             <td>{{ r.grade }}</td>
-            <td>{{ r.name }}</td>
+            <td><div class="flex items-center gap-2.5"><span class="icon-tile icon-tile-blue"><AppIcon name="school" :size="18" /></span><span class="font-medium">{{ r.name }}</span></div></td>
             <td class="text-ink-2">{{ r.headTeacherName || '未指定' }}</td>
             <td class="text-right"><button class="btn btn-ghost btn-sm" @click="openEdit(r)">编辑</button></td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="4" class="py-10 text-center text-ink-3">暂无班级</td></tr>
+          <tr v-if="!rows.length && !error"><td colspan="4" class="py-14 text-center text-ink-3">{{ loading ? '正在加载班级资料…' : '还没有班级，可新增班级或从「数据导入」批量录入' }}</td></tr>
         </tbody>
-      </table>
+      </table></div>
     </div>
 
     <Modal :show="show" :title="editing ? '编辑班级' : '新增班级'" @close="show = false">

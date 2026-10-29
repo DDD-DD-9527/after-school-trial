@@ -6,6 +6,7 @@ import { toast } from '../../lib/toast';
 import AppSelect from '../../ui/AppSelect.vue';
 import AppDatePicker from '../../ui/AppDatePicker.vue';
 import AppTimePicker from '../../ui/AppTimePicker.vue';
+import AppIcon from '../../ui/AppIcon.vue';
 
 const route = useRoute();
 const courses = ref<any[]>([]);
@@ -73,10 +74,11 @@ async function doGenerate() {
 
 <template>
   <div>
-    <div class="mb-4 text-[20px] font-semibold">排课</div>
+    <div class="page-heading"><div><div class="eyebrow">教学准备</div><h1 class="page-title">课程排课</h1><p class="page-description">选好课程与上课时间，先预览具体日期和冲突，再确认生成课次。</p></div></div>
 
-    <div class="grid gap-4 lg:grid-cols-[380px_1fr]">
-      <div class="card card-pad">
+    <div class="grid min-w-0 gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <div class="card min-w-0 p-5">
+        <div class="mb-5 flex items-center gap-3"><span class="icon-tile icon-tile-blue"><AppIcon name="calendar" :size="20" /></span><div><h2 class="section-title">1. 设置上课安排</h2><p class="section-subtitle">同一安排批量生成具体课次</p></div></div>
         <div class="field">
           <label class="label">课程</label>
           <AppSelect v-model="form.courseId" :options="courseOptions" placeholder="请选择课程" />
@@ -121,12 +123,12 @@ async function doGenerate() {
           <input v-model="form.room" class="input" placeholder="如 综合楼 302" />
         </div>
 
-        <button class="btn btn-primary btn-block" :disabled="loading" @click="doPreview">预览课次</button>
+        <button class="btn btn-primary btn-block" :disabled="loading" @click="doPreview"><AppIcon name="eye" :size="16" />{{ loading ? '处理中…' : '预览课次与冲突' }}</button>
       </div>
 
       <div class="card">
         <div class="flex items-center justify-between border-b border-line px-4 py-3">
-          <div class="text-[15px] font-medium">预览</div>
+          <div><h2 class="section-title">2. 核对并生成课次</h2><p class="section-subtitle">确认日期及冲突结果后再写入课表</p></div>
           <div v-if="preview" class="text-[13px] text-ink-3">共 {{ preview.count }} 节</div>
         </div>
         <div class="p-4">
@@ -146,7 +148,7 @@ async function doGenerate() {
 
             <button class="btn btn-primary" :disabled="!preview.ok || loading" @click="doGenerate">确认生成 {{ preview.count }} 节课次</button>
           </template>
-          <div v-else class="py-14 text-center text-[13px] text-ink-3">左侧填写排课信息后点「预览课次」</div>
+          <div v-else class="flex min-h-[300px] flex-col items-center justify-center gap-3 px-4 text-center"><span class="icon-tile icon-tile-blue"><AppIcon name="calendar" :size="23" /></span><div class="text-[15px] font-medium">先看看将要生成哪些课次</div><p class="max-w-[280px] text-[13px] leading-relaxed text-ink-3">填写课程、日期、星期和时段，点击「预览课次与冲突」，核对无误后再生成。</p></div>
         </div>
       </div>
     </div>

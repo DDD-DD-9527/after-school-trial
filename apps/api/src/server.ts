@@ -10,22 +10,12 @@ import { enrollRoutes } from './routes/enroll.js';
 import { attendanceRoutes } from './routes/attendance.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { financeRoutes } from './routes/finance.js';
+import { teacherAttendanceRoutes } from './routes/teacher-attendance.js';
+import { operationsRoutes } from './routes/operations.js';
 
 const app = Fastify({ logger: false });
 
-await app.register(cors, { origin: true, credentials: true });
-
-app.get('/health', async () => ({ ok: true, ts: new Date().toISOString() }));
-
-await app.register(authRoutes);
-await app.register(adminRoutes);
-await app.register(scheduleRoutes);
-await app.register(planRoutes);
-await app.register(enrollRoutes);
-await app.register(attendanceRoutes);
-await app.register(notificationRoutes);
-await app.register(financeRoutes);
-
+// Register the handler before plugins: Fastify child contexts inherit it at registration.
 app.setErrorHandler((err, _req, reply) => {
   if (err instanceof HttpError) {
     return reply.status(err.status).send({ code: err.code, message: err.message });
@@ -39,6 +29,21 @@ app.setErrorHandler((err, _req, reply) => {
   app.log.error(err);
   return reply.status(500).send({ code: 'INTERNAL', message: '服务器开小差了，请稍后再试' });
 });
+
+await app.register(cors, { origin: true, credentials: true });
+
+app.get('/health', async () => ({ ok: true, ts: new Date().toISOString() }));
+
+await app.register(authRoutes);
+await app.register(operationsRoutes);
+await app.register(adminRoutes);
+await app.register(scheduleRoutes);
+await app.register(planRoutes);
+await app.register(enrollRoutes);
+await app.register(attendanceRoutes);
+await app.register(notificationRoutes);
+await app.register(financeRoutes);
+await app.register(teacherAttendanceRoutes);
 
 const port = Number(process.env.PORT || 5281);
 await app.listen({ port, host: '0.0.0.0' });

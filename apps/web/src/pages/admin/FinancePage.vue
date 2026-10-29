@@ -5,6 +5,7 @@ import { toast } from '../../lib/toast';
 import Modal from '../../ui/Modal.vue';
 import AppSelect from '../../ui/AppSelect.vue';
 import AppPagination from '../../ui/AppPagination.vue';
+import AppIcon from '../../ui/AppIcon.vue';
 
 const yuan = (c: number) => `¥${(c / 100).toFixed(2)}`;
 
@@ -18,6 +19,7 @@ const courseId = ref<number | null>(null);
 const courses = ref<any[]>([]);
 const summary = ref<any>(null);
 const loading = ref(false);
+const error = ref('');
 
 const showPay = ref(false);
 const current = ref<any>(null);
@@ -43,6 +45,7 @@ const statusTabs = [
 
 async function load() {
   loading.value = true;
+  error.value = '';
   try {
     const params = new URLSearchParams({ page: String(page.value), size: String(size.value) });
     if (q.value) params.set('q', q.value);
@@ -56,6 +59,7 @@ async function load() {
     total.value = list.total;
     summary.value = sum;
   } catch (e: any) {
+    error.value = e.message || '账单加载失败，请重试';
     toast(e.message, 'error');
   } finally {
     loading.value = false;
@@ -115,30 +119,30 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
 
 <template>
   <div>
-    <div class="mb-4 text-[20px] font-semibold">收费</div>
+    <div class="page-heading"><div><div class="eyebrow">报名与费用</div><h1 class="page-title">线下收费</h1><p class="page-description">核对孩子的课程账单，登记已收到的款项，保留每一笔收款记录。</p></div><button class="btn btn-secondary" :disabled="loading" @click="load"><AppIcon name="refresh" :size="16" />刷新账单</button></div>
 
     <div class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <div class="card card-pad">
-        <div class="text-[13px] text-ink-2">应收</div>
-        <div class="mt-1 text-[24px] font-semibold">{{ summary ? yuan(summary.receivable) : '—' }}</div>
+      <div class="metric-card">
+        <div class="mb-4 flex items-center justify-between"><span class="text-[13px] text-ink-2">应收金额</span><span class="icon-tile icon-tile-blue"><AppIcon name="wallet" :size="18" /></span></div>
+        <div class="text-[26px] font-semibold tabular-nums">{{ summary && !error ? yuan(summary.receivable) : '—' }}</div><div class="mt-2 text-[12px] text-ink-3">当前课程范围的有效账单</div>
       </div>
-      <div class="card card-pad">
-        <div class="text-[13px] text-ink-2">实收</div>
-        <div class="mt-1 text-[24px] font-semibold text-ok">{{ summary ? yuan(summary.received) : '—' }}</div>
+      <div class="metric-card">
+        <div class="mb-4 flex items-center justify-between"><span class="text-[13px] text-ink-2">已收金额</span><span class="icon-tile icon-tile-mint"><AppIcon name="check-circle" :size="18" /></span></div>
+        <div class="text-[26px] font-semibold tabular-nums text-ok">{{ summary && !error ? yuan(summary.received) : '—' }}</div><div class="mt-2 text-[12px] text-ink-3">学校已登记的线下收款</div>
       </div>
-      <div class="card card-pad">
-        <div class="text-[13px] text-ink-2">未收</div>
-        <div class="mt-1 text-[24px] font-semibold text-danger">{{ summary ? yuan(summary.outstanding) : '—' }}</div>
+      <div class="metric-card">
+        <div class="mb-4 flex items-center justify-between"><span class="text-[13px] text-ink-2">待收金额</span><span class="icon-tile icon-tile-amber"><AppIcon name="clock" :size="18" /></span></div>
+        <div class="text-[26px] font-semibold tabular-nums text-warn">{{ summary && !error ? yuan(summary.outstanding) : '—' }}</div><div class="mt-2 text-[12px] text-ink-3">应收金额减去已收金额</div>
       </div>
-      <div class="card card-pad">
-        <div class="text-[13px] text-ink-2">账单</div>
-        <div class="mt-1 text-[24px] font-semibold">
-          {{ summary?.paidCount ?? 0 }}<span class="text-[13px] font-normal text-ink-3"> 已缴 / {{ summary?.billCount ?? 0 }} 总数</span>
-        </div>
+      <div class="metric-card">
+        <div class="mb-4 flex items-center justify-between"><span class="text-[13px] text-ink-2">缴清账单</span><span class="icon-tile icon-tile-blue"><AppIcon name="file" :size="18" /></span></div>
+        <div class="text-[26px] font-semibold">{{ summary && !error ? summary.paidCount : '—' }}<span class="text-[13px] font-normal text-ink-3"> / {{ summary && !error ? summary.billCount : '—' }} 笔</span></div><div class="mt-2 text-[12px] text-ink-3">不包含已作废账单</div>
       </div>
     </div>
-
+    <p class="mb-5 text-[12px] leading-relaxed text-ink-3">汇总随课程范围变化，不随列表状态、搜索或页码变化。此处记录线下收款，不提供在线支付与退款。</p>
+    <div v-if="error" class="card mb-4 flex flex-wrap items-center justify-between gap-3 p-4 text-[13px]" role="alert"><span class="text-danger">{{ error }}</span><button class="btn btn-secondary btn-sm" @click="load">重新加载</button></div>
     <div class="card">
+      <div class="section-heading border-b border-line px-5 py-4"><div><h2 class="section-title">学生账单</h2><p class="section-subtitle">选择待缴账单后登记收款，已登记款项可查看历史。</p></div><span class="text-[12px] text-ink-3">{{ total }} 笔</span></div>
       <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
         <div class="w-[180px]">
           <AppSelect v-model="courseId" :options="courseOptions" @update:model-value="search" />
@@ -147,8 +151,8 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
           <button
             v-for="t in statusTabs"
             :key="t.v"
-            class="rounded-md px-3 py-1.5 text-[13px]"
-            :class="status === t.v ? 'bg-brand-soft font-medium text-brand' : 'text-ink-2 hover:bg-[#f5f6f8]'"
+            class="filter-chip"
+            :class="status === t.v ? 'filter-chip-active' : ''"
             @click="pickStatus(t.v)"
           >
             {{ t.l }}
@@ -158,26 +162,26 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
         <button class="btn btn-secondary btn-sm" @click="search">查询</button>
       </div>
 
-      <table class="table-base">
+      <div class="overflow-x-auto"><table class="table-base min-w-[820px]">
         <thead>
           <tr><th>学生</th><th>班级</th><th>课程</th><th>应缴</th><th>已缴</th><th>状态</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="r in rows" :key="r.id">
-            <td>{{ r.studentName }} <span class="ml-1 text-[12px] text-ink-3">{{ r.code }}</span></td>
+            <td><div class="font-medium">{{ r.studentName }}</div><div class="mt-1 text-[12px] text-ink-3">{{ r.code }}</div></td>
             <td class="text-ink-2">{{ r.className }}</td>
             <td>{{ r.courseName }}</td>
             <td>{{ yuan(r.amount_cents) }}</td>
             <td :class="r.paid_cents >= r.amount_cents ? 'text-ok' : 'text-ink-2'">{{ yuan(r.paid_cents) }}</td>
             <td><span class="badge" :class="badge(r.status)">{{ label(r.status) }}</span></td>
-            <td class="text-right">
+            <td class="whitespace-nowrap text-right">
               <button v-if="r.status !== 'paid' && r.status !== 'void'" class="btn btn-primary btn-sm" @click="openPay(r)">登记收款</button>
               <button v-if="r.paid_cents > 0" class="btn btn-ghost btn-sm" @click="openHistory(r)">收款记录</button>
             </td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="7" class="py-10 text-center text-ink-3">{{ loading ? '加载中…' : '暂无账单' }}</td></tr>
+          <tr v-if="!rows.length && !error"><td colspan="7" class="py-14 text-center text-ink-3">{{ loading ? '正在加载账单…' : q || status || courseId ? '当前筛选下没有账单，试试其他条件' : '还没有课程账单，付费课程报名后会生成账单' }}</td></tr>
         </tbody>
-      </table>
+      </table></div>
 
       <AppPagination v-model:page="page" v-model:size="size" :total="total" />
     </div>
@@ -199,6 +203,7 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
         <label class="label">备注（选填）</label>
         <input v-model="form.note" class="input" placeholder="如 家长转账 / 现金" />
       </div>
+      <p class="rounded-lg bg-brand-soft p-3 text-[12px] leading-relaxed text-ink-2">请核实已实际收到该笔款项。确认后将更新账单，并通知家长收款已登记。</p>
       <template #footer>
         <button class="btn btn-secondary btn-sm" @click="showPay = false">取消</button>
         <button class="btn btn-primary btn-sm" :disabled="submitting" @click="submitPay">{{ submitting ? '提交中…' : '确认收款' }}</button>
@@ -206,7 +211,7 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
     </Modal>
 
     <Modal :show="showHistory" title="收款记录" width="480px" @close="showHistory = false">
-      <table class="table-base">
+      <div class="overflow-x-auto"><table class="table-base min-w-[450px]">
         <thead><tr><th>时间</th><th>金额</th><th>方式</th><th>经办</th><th>备注</th></tr></thead>
         <tbody>
           <tr v-for="p in history" :key="p.id">
@@ -218,7 +223,7 @@ const label = (s: string) => (s === 'paid' ? '已缴清' : s === 'partial' ? '�
           </tr>
           <tr v-if="!history.length"><td colspan="5" class="py-8 text-center text-ink-3">暂无记录</td></tr>
         </tbody>
-      </table>
+      </table></div>
     </Modal>
   </div>
 </template>

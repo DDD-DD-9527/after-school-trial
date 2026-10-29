@@ -3,6 +3,8 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { initializeTeacherAttendance } from './db/teacher-attendance.js';
+import { initializeMultiSchool } from './db/multi-school.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.DATA_DIR || path.join(here, '..', 'data');
@@ -13,15 +15,23 @@ export interface School {
   id: Generated<number>;
   name: string;
   term: string;
+  code: string;
+  status: 'active' | 'inactive';
+  contact_name: string;
+  contact_phone: string;
+  created_at: Generated<string>;
 }
 export interface User {
   id: Generated<number>;
   phone: string;
   name: string;
-  role: 'admin' | 'teacher' | 'parent';
+  role: 'operator' | 'admin' | 'teacher' | 'parent';
   password_hash: string;
   teacher_id: number | null;
   must_change_password: Generated<number>;
+  school_id: number | null;
+  status: Generated<'active' | 'inactive'>;
+  created_at: Generated<string>;
 }
 export interface ClassRow {
   id: Generated<number>;
@@ -121,6 +131,31 @@ export interface Attendance {
   updated_at: Generated<string>;
 }
 
+export interface TeacherAttendance {
+  session_id: number;
+  teacher_id: number;
+  check_in_at: string | null;
+  check_out_at: string | null;
+  override_status: string | null;
+  reason: string | null;
+  updated_by: number | null;
+  updated_at: string;
+}
+export interface TeacherAttendanceLog {
+  id: Generated<number>;
+  session_id: number;
+  teacher_id: number;
+  action: string;
+  actor_id: number;
+  actor_name: string;
+  reason: string | null;
+  before_status: string;
+  after_status: string;
+  before_data: string;
+  after_data: string;
+  created_at: string;
+}
+
 export interface SessionChange {
   id: Generated<number>;
   session_id: number;
@@ -187,16 +222,21 @@ export interface DB {
   enroll_plan_courses: EnrollPlanCourse;
   enroll_records: EnrollRecord;
   attendance: Attendance;
+  teacher_attendance: TeacherAttendance;
+  teacher_attendance_logs: TeacherAttendanceLog;
   session_changes: SessionChange;
   leave_requests: LeaveRequest;
   notifications: Notification;
   bills: Bill;
   payments: Payment;
+  operations_logs: { id: Generated<number>; school_id: number; actor_id: number; actor_name: string; action: string; detail: string; created_at: Generated<string> };
 }
 
 const sqlite = new Database(DB_FILE);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
+initializeTeacherAttendance(sqlite);
+initializeMultiSchool(sqlite, { backupDirectory: path.join(DATA_DIR, 'backups') });
 
 export const db = new Kysely<DB>({
   dialect: new SqliteDialect({ database: sqlite }),
@@ -204,10 +244,10 @@ export const db = new Kysely<DB>({
 
 export const raw = sqlite;
 
-export function todayStr(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+export function todayStr(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date);
 }
 
 export function nowStr(): string {

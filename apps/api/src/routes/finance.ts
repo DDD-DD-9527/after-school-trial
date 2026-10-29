@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { sql } from 'kysely';
 import { db } from '../db.js';
 import { HttpError, getUser, requireAuth } from '../auth.js';
 import { notifyStudentParents } from '../lib/notify.js';
+import { assertChild, assertSchoolRow, schoolIdOf } from '../lib/school-scope.js';
 
 const adminGuard = { preHandler: requireAuth('admin') };
 const parentGuard = { preHandler: requireAuth('parent') };
@@ -13,12 +13,33 @@ const num = (v: unknown, f = 0) => {
 
 const METHOD_LABEL: Record<string, string> = { cash: '现金', transfer: '转账', wechat: '微信', other: '其他' };
 
+async function billOf(id: number, schoolId: number) {
+  const bill = await db.selectFrom('bills as b')
+    .innerJoin('courses as c', 'c.id', 'b.course_id')
+    .innerJoin('students as s', 's.id', 'b.student_id')
+    .selectAll('b')
+    .where('b.id', '=', id)
+    .where('c.school_id', '=', schoolId)
+    .where('s.school_id', '=', schoolId)
+    .executeTakeFirst();
+  if (!bill) throw new HttpError(404, 'NOT_FOUND', '账单不存在');
+  return bill;
+}
+
 export async function financeRoutes(app: FastifyInstance) {
   // ---------- 汇总 ----------
   app.get('/api/admin/finance/summary', adminGuard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
-    let base = db.selectFrom('bills').selectAll().where('status', '!=', 'void');
-    if (q.courseId) base = base.where('course_id', '=', num(q.courseId));
+    let base = db.selectFrom('bills as b')
+      .innerJoin('courses as c', 'c.id', 'b.course_id')
+      .innerJoin('students as s', 's.id', 'b.student_id')
+      .selectAll('b').where('b.status', '!=', 'void')
+      .where('c.school_id', '=', schoolId).where('s.school_id', '=', schoolId);
+    if (q.courseId) {
+      await assertSchoolRow('courses', num(q.courseId), schoolId);
+      base = base.where('b.course_id', '=', num(q.courseId));
+    }
     const bills = await base.execute();
     const receivable = bills.reduce((a, b) => a + b.amount_cents, 0);
     const received = bills.reduce((a, b) => a + b.paid_cents, 0);
@@ -34,16 +55,20 @@ export async function financeRoutes(app: FastifyInstance) {
 
   // ---------- 账单列表 ----------
   app.get('/api/admin/finance/bills', adminGuard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
     const page = Math.max(1, num(q.page, 1));
     const size = Math.min(100, Math.max(5, num(q.size, 20)));
+    if (q.courseId) await assertSchoolRow('courses', num(q.courseId), schoolId);
 
     const build = () => {
       let qb = db
         .selectFrom('bills as b')
         .innerJoin('students as s', 's.id', 'b.student_id')
-        .leftJoin('classes as c', 'c.id', 's.class_id')
-        .innerJoin('courses as co', 'co.id', 'b.course_id');
+        .leftJoin('classes as c', (join) => join.onRef('c.id', '=', 's.class_id').on('c.school_id', '=', schoolId))
+        .innerJoin('courses as co', 'co.id', 'b.course_id')
+        .where('co.school_id', '=', schoolId)
+        .where('s.school_id', '=', schoolId);
       if (q.courseId) qb = qb.where('b.course_id', '=', num(q.courseId));
       if (q.status) qb = qb.where('b.status', '=', String(q.status));
       if (q.q) qb = qb.where((eb) => eb.or([eb('s.name', 'like', `%${q.q}%`), eb('s.code', 'like', `%${q.q}%`)]));
@@ -83,8 +108,7 @@ export async function financeRoutes(app: FastifyInstance) {
     if (!amount || amount <= 0) throw new HttpError(400, 'BAD_INPUT', '收款金额必须大于 0');
     if (!METHOD_LABEL[method]) throw new HttpError(400, 'BAD_INPUT', '不支持的收款方式');
 
-    const bill = await db.selectFrom('bills').selectAll().where('id', '=', id).executeTakeFirst();
-    if (!bill) throw new HttpError(404, 'NOT_FOUND', '账单不存在');
+    const bill = await billOf(id, schoolIdOf(req));
     if (bill.status === 'void') throw new HttpError(400, 'BAD_STATE', '账单已作废，不能收款');
     if (bill.paid_cents + amount > bill.amount_cents) {
       throw new HttpError(400, 'OVERPAY', `收费金额超过应缴（剩余 ${(bill.amount_cents - bill.paid_cents) / 100} 元）`);
@@ -115,10 +139,12 @@ export async function financeRoutes(app: FastifyInstance) {
 
   // ---------- 收款记录 ----------
   app.get('/api/admin/finance/bills/:id/payments', adminGuard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await billOf(id, schoolId);
     return db
       .selectFrom('payments as p')
-      .leftJoin('users as u', 'u.id', 'p.operator_id')
+      .leftJoin('users as u', (join) => join.onRef('u.id', '=', 'p.operator_id').on('u.school_id', '=', schoolId))
       .select(['p.id', 'p.amount_cents', 'p.method', 'p.note', 'p.paid_at', 'u.name as operatorName'])
       .where('p.bill_id', '=', id)
       .orderBy('p.id', 'desc')
@@ -129,11 +155,13 @@ export async function financeRoutes(app: FastifyInstance) {
   app.get('/api/parent/bills', parentGuard, async (req) => {
     const studentId = num((req.query as any).studentId);
     if (!studentId) return [];
+    await assertChild(studentId, req);
     return db
       .selectFrom('bills as b')
       .innerJoin('courses as c', 'c.id', 'b.course_id')
       .select(['b.id', 'b.amount_cents', 'b.paid_cents', 'b.status', 'b.created_at', 'c.name as courseName'])
       .where('b.student_id', '=', studentId)
+      .where('c.school_id', '=', schoolIdOf(req))
       .orderBy('b.id', 'desc')
       .execute();
   });

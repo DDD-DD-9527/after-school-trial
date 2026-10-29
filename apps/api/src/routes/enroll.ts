@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { db, todayStr } from '../db.js';
-import { HttpError, childrenOf, getUser, requireAuth } from '../auth.js';
+import { HttpError, requireAuth } from '../auth.js';
 import { notifyStudentParents, notifyCourseTeacher } from '../lib/notify.js';
 import { ensureBill, voidUnpaidBill } from '../lib/billing.js';
+import { assertChild, assertSession, schoolIdOf } from '../lib/school-scope.js';
 
 const guard = { preHandler: requireAuth('parent') };
 const num = (v: unknown, f = 0) => {
@@ -16,18 +17,13 @@ function toMin(t: string) {
   return h * 60 + (m || 0);
 }
 
-async function assertChild(uid: number, studentId: number) {
-  const children = await childrenOf(uid);
-  if (!children.some((c) => c.id === studentId)) {
-    throw new HttpError(403, 'FORBIDDEN', '这不是您监护的孩子');
-  }
-}
-
 export async function enrollRoutes(app: FastifyInstance) {
   app.get('/api/parent/plans', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const studentId = num((req.query as any).studentId);
+    if (studentId) await assertChild(studentId, req);
     const plans = await db
-      .selectFrom('enroll_plans')
+      .selectFrom('enroll_plans').where('school_id', '=', schoolId)
       .selectAll()
       .where('status', '=', 'open')
       .orderBy('id', 'desc')
@@ -36,8 +32,8 @@ export async function enrollRoutes(app: FastifyInstance) {
     for (const p of plans) {
       const courses = await db
         .selectFrom('enroll_plan_courses as pc')
-        .innerJoin('courses as c', 'c.id', 'pc.course_id')
-        .leftJoin('teachers as t', 't.id', 'c.teacher_id')
+        .innerJoin('courses as c', 'c.id', 'pc.course_id').where('c.school_id', '=', schoolId)
+        .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId))
         .select([
           'pc.id as planCourseId',
           'pc.capacity',
@@ -71,10 +67,11 @@ export async function enrollRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/parent/courses/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
     const course = await db
-      .selectFrom('courses as c')
-      .leftJoin('teachers as t', 't.id', 'c.teacher_id')
+      .selectFrom('courses as c').where('c.school_id', '=', schoolId)
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId))
       .selectAll('c')
       .select(['t.name as teacherName'])
       .where('c.id', '=', id)
@@ -82,32 +79,34 @@ export async function enrollRoutes(app: FastifyInstance) {
     if (!course) throw new HttpError(404, 'NOT_FOUND', '课程不存在');
     const sessions = await db
       .selectFrom('sessions as s')
-      .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
+      .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
       .select(['s.id', 's.date', 's.weekday', 's.start_time', 's.end_time', 'g.room'])
       .where('s.course_id', '=', id)
       .where('s.status', '!=', 'cancelled')
       .orderBy('s.date')
       .execute();
     const pc = await db
-      .selectFrom('enroll_plan_courses')
-      .selectAll()
-      .where('course_id', '=', id)
+      .selectFrom('enroll_plan_courses as pc')
+      .innerJoin('enroll_plans as p', 'p.id', 'pc.plan_id')
+      .selectAll('pc')
+      .where('p.school_id', '=', schoolId)
+      .where('pc.course_id', '=', id)
       .executeTakeFirst();
     return { ...course, sessions, planCourseId: pc?.id ?? null, remaining: pc ? Math.max(0, pc.capacity - pc.enrolled) : 0 };
   });
 
   app.post('/api/parent/enroll', guard, async (req) => {
-    const p = getUser(req);
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     const planCourseId = num(b?.planCourseId);
     const studentId = num(b?.studentId);
     if (!planCourseId || !studentId) throw new HttpError(400, 'BAD_INPUT', '参数不完整');
-    await assertChild(p.uid, studentId);
+    await assertChild(studentId, req);
 
     const pc = await db
       .selectFrom('enroll_plan_courses as pc')
-      .innerJoin('enroll_plans as p', 'p.id', 'pc.plan_id')
-      .innerJoin('courses as c', 'c.id', 'pc.course_id')
+      .innerJoin('enroll_plans as p', 'p.id', 'pc.plan_id').where('p.school_id', '=', schoolId)
+      .innerJoin('courses as c', 'c.id', 'pc.course_id').where('c.school_id', '=', schoolId)
       .select(['pc.id', 'pc.capacity', 'pc.enrolled', 'pc.course_id', 'p.status as planStatus', 'p.start_at', 'p.end_at', 'c.capacity as courseCapacity'])
       .where('pc.id', '=', planCourseId)
       .executeTakeFirst();
@@ -137,7 +136,7 @@ export async function enrollRoutes(app: FastifyInstance) {
     const oldSessions = await db
       .selectFrom('sessions as s')
       .innerJoin('enroll_records as r', 'r.course_id', 's.course_id')
-      .innerJoin('courses as c', 'c.id', 's.course_id')
+      .innerJoin('courses as c', 'c.id', 's.course_id').where('c.school_id', '=', schoolId)
       .select(['s.date', 's.start_time', 's.end_time', 'c.name as courseName'])
       .where('r.student_id', '=', studentId)
       .where('r.status', '=', 'effective')
@@ -207,13 +206,15 @@ export async function enrollRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/parent/enrollments', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const studentId = num((req.query as any).studentId);
     if (!studentId) return [];
+    await assertChild(studentId, req);
     return db
       .selectFrom('enroll_records as r')
-      .innerJoin('courses as c', 'c.id', 'r.course_id')
+      .innerJoin('courses as c', 'c.id', 'r.course_id').where('c.school_id', '=', schoolId)
       .innerJoin('class_groups as g', 'g.course_id', 'c.id')
-      .leftJoin('teachers as t', 't.id', 'c.teacher_id')
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId))
       .select([
         'r.id',
         'r.status',
@@ -229,11 +230,17 @@ export async function enrollRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/parent/enrollments/:id/withdraw', guard, async (req) => {
-    const p = getUser(req);
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
-    const rec = await db.selectFrom('enroll_records').selectAll().where('id', '=', id).executeTakeFirst();
+    const rec = await db.selectFrom('enroll_records as r')
+      .innerJoin('courses as c', 'c.id', 'r.course_id')
+      .innerJoin('students as s', 's.id', 'r.student_id')
+      .innerJoin('enroll_plan_courses as pc', (join) => join.onRef('pc.id', '=', 'r.plan_course_id').onRef('pc.course_id', '=', 'r.course_id'))
+      .innerJoin('enroll_plans as p', 'p.id', 'pc.plan_id')
+      .selectAll('r').where('r.id', '=', id)
+      .where('c.school_id', '=', schoolId).where('s.school_id', '=', schoolId).where('p.school_id', '=', schoolId).executeTakeFirst();
     if (!rec) throw new HttpError(404, 'NOT_FOUND', '报名记录不存在');
-    await assertChild(p.uid, rec.student_id);
+    await assertChild(rec.student_id, req);
     if (rec.status !== 'effective') throw new HttpError(400, 'BAD_STATE', '当前状态不能退课');
     await db.updateTable('enroll_records').set({ status: 'withdrawn' }).where('id', '=', id).execute();
     await voidUnpaidBill(id);
@@ -247,14 +254,16 @@ export async function enrollRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/parent/schedule', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const studentId = num((req.query as any).studentId);
     if (!studentId) return [];
+    await assertChild(studentId, req);
     return db
       .selectFrom('sessions as s')
       .innerJoin('enroll_records as r', 'r.course_id', 's.course_id')
-      .innerJoin('courses as c', 'c.id', 's.course_id')
-      .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
-      .leftJoin('teachers as t', 't.id', 'g.teacher_id')
+      .innerJoin('courses as c', 'c.id', 's.course_id').where('c.school_id', '=', schoolId)
+      .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'g.teacher_id').on('t.school_id', '=', schoolId))
       .leftJoin('leave_requests as lv', (join) => join.onRef('lv.session_id', '=', 's.id').on('lv.student_id', '=', studentId))
       .select([
         's.id',
@@ -279,13 +288,14 @@ export async function enrollRoutes(app: FastifyInstance) {
 
   // 请假（试用版：提交即生效）
   app.post('/api/parent/leaves', guard, async (req) => {
-    const p = getUser(req);
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     const studentId = num(b?.studentId);
     const sessionId = num(b?.sessionId);
     const reason = String(b?.reason || '').slice(0, 200);
     if (!studentId || !sessionId) throw new HttpError(400, 'BAD_INPUT', '参数不完整');
-    await assertChild(p.uid, studentId);
+    await assertChild(studentId, req);
+    await assertSession(sessionId, schoolId);
 
     const s = await db
       .selectFrom('sessions as s')
@@ -308,7 +318,7 @@ export async function enrollRoutes(app: FastifyInstance) {
 
     const sDetail = await db
       .selectFrom('sessions as s')
-      .innerJoin('courses as c', 'c.id', 's.course_id')
+      .innerJoin('courses as c', 'c.id', 's.course_id').where('c.school_id', '=', schoolId)
       .select(['c.id as courseId', 'c.name as courseName', 's.date', 's.start_time', 's.end_time'])
       .where('s.id', '=', sessionId)
       .executeTakeFirst();
@@ -325,12 +335,14 @@ export async function enrollRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/parent/leaves', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const studentId = num((req.query as any).studentId);
     if (!studentId) return [];
+    await assertChild(studentId, req);
     return db
       .selectFrom('leave_requests as lv')
       .innerJoin('sessions as s', 's.id', 'lv.session_id')
-      .innerJoin('courses as c', 'c.id', 's.course_id')
+      .innerJoin('courses as c', 'c.id', 's.course_id').where('c.school_id', '=', schoolId)
       .select(['lv.id', 'lv.status', 'lv.reason', 'lv.created_at', 's.date', 's.start_time', 's.end_time', 'c.name as courseName'])
       .where('lv.student_id', '=', studentId)
       .orderBy('s.date', 'desc')

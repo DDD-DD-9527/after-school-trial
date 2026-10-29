@@ -3,74 +3,38 @@ import { computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { state, logout, children, currentChild, setChild } from '../lib/auth';
 import { unread, refreshUnread } from '../lib/notify';
-
+import AppIcon from '../ui/AppIcon.vue';
+import AppSelect from '../ui/AppSelect.vue';
 const route = useRoute();
 const router = useRouter();
-onMounted(refreshUnread);
-
+onMounted(() => refreshUnread().catch(() => {}));
 const isParent = computed(() => state.me?.role === 'parent');
-const tabs = computed(() =>
-  isParent.value
-    ? [
-        { to: '/parent', label: '首页', icon: '⌂' },
-        { to: '/parent/enroll', label: '选课', icon: '⊕' },
-        { to: '/parent/enrollments', label: '我的报名', icon: '☰' },
-        { to: '/parent/schedule', label: '课表', icon: '◷' },
-      ]
-    : [
-        { to: '/teacher', label: '今日', icon: '◷' },
-      ]
-);
+const roleName = computed(() => isParent.value ? '家长空间' : '教师工作台');
+const home = computed(() => isParent.value ? '/parent' : '/teacher');
+const tabs = computed(() => isParent.value ? [
+  { to: '/parent', label: '首页', icon: 'home' },
+  { to: '/parent/enroll', label: '选课报名', icon: 'book' },
+  { to: '/parent/schedule', label: '孩子课表', icon: 'calendar' },
+  { to: '/parent/enrollments', label: '报名与费用', icon: 'wallet' },
+] : [
+  { to: '/teacher', label: '今日教学', icon: 'calendar' },
+  { to: '/teacher/attendance', label: '我的考勤', icon: 'check-circle' },
+  { to: '/teacher/messages', label: '消息', icon: 'bell' },
+]);
+const childOptions = computed(() => children.value.map(c => ({ value: c.id, label: c.name })));
+const active = (to: string) => route.path === to || (to === '/parent/enroll' && route.path.startsWith('/parent/course/')) || (to === '/teacher' && route.path.startsWith('/teacher/sessions/'));
+const messagesPath = computed(() => isParent.value ? '/parent/messages' : '/teacher/messages');
 </script>
-
 <template>
-  <div class="min-h-screen bg-bg pb-16">
-    <header class="sticky top-0 z-20 flex h-12 items-center justify-between border-b border-line bg-white px-4">
-      <div class="text-[15px] font-medium">{{ isParent ? '课后服务' : '教师端' }}</div>
-      <div class="flex items-center gap-2">
-        <button
-          class="relative flex h-8 w-8 items-center justify-center rounded-lg text-ink-2"
-          @click="router.push(`/${state.me?.role === 'teacher' ? 'teacher' : 'parent'}/messages`)"
-        >
-          <svg class="h-[18px] w-[18px]" viewBox="0 0 20 20" fill="none">
-            <path d="M5 8a5 5 0 1110 0v3.5l1.2 2.2H3.8L5 11.5V8z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
-            <path d="M8 16a2 2 0 004 0" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-          </svg>
-          <span
-            v-if="unread > 0"
-            class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-medium text-white"
-          >
-            {{ unread > 99 ? '99+' : unread }}
-          </span>
-        </button>
-        <select
-          v-if="isParent && children.length > 1"
-          class="rounded-md border border-line bg-white px-2 py-1 text-[13px]"
-          :value="currentChild?.id"
-          @change="setChild(Number(($event.target as HTMLSelectElement).value))"
-        >
-          <option v-for="c in children" :key="c.id" :value="c.id">{{ c.name }}</option>
-        </select>
-        <span v-else class="text-[13px] text-ink-2">{{ isParent ? currentChild?.name : state.me?.name }}</span>
-        <button class="text-[13px] text-ink-3" @click="logout">退出</button>
-      </div>
-    </header>
-
-    <main class="p-4">
-      <router-view />
-    </main>
-
-    <nav class="fixed bottom-0 left-0 right-0 z-20 flex border-t border-line bg-white pb-[env(safe-area-inset-bottom)]">
-      <button
-        v-for="t in tabs"
-        :key="t.to"
-        class="flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px]"
-        :class="route.path === t.to ? 'text-brand' : 'text-ink-3'"
-        @click="router.push(t.to)"
-      >
-        <span class="text-[16px]">{{ t.icon }}</span>
-        {{ t.label }}
-      </button>
-    </nav>
+  <div class="role-shell" :class="isParent ? 'parent-shell' : 'teacher-shell'">
+    <a class="skip-link" href="#role-content">跳转到页面内容</a>
+    <aside class="role-desktop-sidebar"><router-link :to="home" class="role-brand"><span class="role-brand-mark"><AppIcon name="book" :size="22" /></span><span>课后服务<span>{{ roleName }}</span></span></router-link><div class="role-identity"><div class="role-avatar"><AppIcon :name="isParent ? 'leaf' : 'user'" :size="28" /></div><div class="mt-3 font-semibold">{{ isParent ? currentChild?.name || '未绑定孩子' : state.me?.name }}</div><div class="mt-1 text-[12px] text-ink-3">{{ isParent ? `${state.me?.school?.name || '学校空间'} · 课后时光` : `${state.me?.school?.name || '学校空间'} · 授课教师` }}</div><div v-if="isParent && children.length > 1" class="mt-4"><AppSelect :model-value="currentChild?.id ?? null" :options="childOptions" @update:model-value="setChild(Number($event))" /></div></div><nav class="role-side-nav" :aria-label="`${roleName}导航`"><router-link v-for="tab in tabs" :key="tab.to" :to="tab.to" :class="{ 'is-active': active(tab.to) }" :aria-current="active(tab.to) ? 'page' : undefined"><AppIcon :name="tab.icon" :size="20" />{{ tab.label }}</router-link><router-link v-if="isParent" :to="messagesPath" :class="{ 'is-active': route.path === messagesPath }"><AppIcon name="bell" :size="20" />消息中心<span v-if="unread" class="ml-auto text-[11px] text-brand">{{ unread }}</span></router-link></nav><div class="role-sidebar-note"><AppIcon name="leaf" :size="24" /><p>让放学后的每一天<br />都有值得期待的安排。</p></div><button class="role-logout" @click="logout"><AppIcon name="log-out" :size="17" />退出登录</button></aside>
+    <div class="role-body"><header class="role-header"><router-link :to="home" class="role-mobile-brand"><span class="role-brand-mark"><AppIcon name="book" :size="18" /></span><span>课后服务</span><span class="role-label">{{ isParent ? '家长' : '教师' }}</span></router-link><span class="hidden text-[13px] text-ink-3 lg:block">{{ state.me?.school?.name || '学校空间' }} <span class="mx-2 text-[#c3cbd9]">/</span> {{ roleName }}</span><div class="flex min-w-0 items-center gap-2 sm:gap-4"><div v-if="isParent && children.length > 1" class="role-mobile-child"><AppSelect :model-value="currentChild?.id ?? null" :options="childOptions" @update:model-value="setChild(Number($event))" /></div><span v-else class="hidden text-[13px] text-ink-2 sm:inline">{{ isParent ? currentChild?.name : state.me?.name }}</span><button class="icon-button relative" aria-label="消息中心" @click="router.push(messagesPath)"><AppIcon name="bell" /><span v-if="unread" class="unread-dot">{{ unread > 99 ? '99+' : unread }}</span></button><button class="icon-button role-mobile-logout" title="退出登录" aria-label="退出登录" @click="logout"><AppIcon name="log-out" :size="18" /></button></div></header><main id="role-content" class="mobile-main" tabindex="-1"><router-view /></main><div class="role-page-footer">{{ state.me?.school?.name || '学校空间' }} · {{ state.me?.school?.term || '课后服务' }}</div></div>
+    <nav class="role-bottom-nav" :aria-label="`${roleName}导航`"><router-link v-for="tab in tabs" :key="tab.to" :to="tab.to" :aria-current="active(tab.to) ? 'page' : undefined" :class="{ 'is-active': active(tab.to) }"><span class="bottom-nav-icon"><AppIcon :name="tab.icon" :size="21" /><span v-if="tab.to.endsWith('/messages') && unread" class="tab-unread" /></span><span>{{ tab.label }}</span></router-link></nav>
   </div>
 </template>
+<style scoped>
+.role-shell{min-height:100vh;--mobile-sidebar-width:232px}.role-desktop-sidebar{display:none}.role-body{min-width:0}.role-header{position:sticky;top:0;z-index:25;display:flex;align-items:center;justify-content:space-between;gap:12px;height:66px;padding:0 20px;border-bottom:1px solid var(--color-line);background:#fffffff5;backdrop-filter:blur(12px)}.role-mobile-brand{display:flex;align-items:center;gap:8px;white-space:nowrap;font-size:15px;font-weight:700;color:var(--color-ink);text-decoration:none}.role-brand-mark{display:flex;align-items:center;justify-content:center;width:30px;height:32px;border-radius:9px 9px 9px 3px;background:var(--color-brand);color:white}.role-label{padding:2px 5px;border-radius:4px;background:#edf1f9;font-size:9px;font-weight:500;color:var(--color-ink-3)}.role-mobile-child{width:92px}.mobile-main{width:100%;max-width:1080px;margin:0 auto;padding:24px 18px 104px;outline:none}.role-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:space-around;padding:8px 6px calc(8px + env(safe-area-inset-bottom));border-top:1px solid var(--color-line);background:#fffffffa;backdrop-filter:blur(12px)}.role-bottom-nav a{display:flex;flex:1;flex-direction:column;align-items:center;gap:3px;min-height:44px;padding:4px 0;font-size:10px;font-weight:500;text-decoration:none;color:var(--color-ink-3)}.role-bottom-nav a.is-active{color:var(--color-brand)}.bottom-nav-icon{position:relative;display:flex;align-items:center;justify-content:center;width:40px;height:26px;border-radius:9px}.is-active .bottom-nav-icon{background:var(--color-brand-soft)}.tab-unread{position:absolute;right:5px;top:1px;width:6px;height:6px;border-radius:50%;background:var(--color-danger)}.role-page-footer{display:none}
+@media(min-width:680px){.mobile-main{padding:30px 28px 108px}.role-header{padding:0 28px}}
+@media(min-width:1024px){.role-shell{display:flex}.role-desktop-sidebar{position:sticky;top:0;display:flex;flex-direction:column;width:232px;flex-shrink:0;height:100vh;border-right:1px solid var(--color-line);background:white;padding:28px 18px 16px}.role-brand{display:flex;align-items:center;gap:11px;padding:0 6px;color:var(--color-ink);font-size:18px;font-weight:700;text-decoration:none}.role-brand>span:last-child>span{display:block;margin-top:2px;color:var(--color-ink-3);font-size:11px;font-weight:400}.role-brand-mark{width:38px;height:40px;border-radius:11px 11px 11px 4px}.role-identity{margin:28px 0 24px;padding:24px 18px;border:1px solid var(--color-line);border-radius:16px;background:#fafbff;text-align:center}.role-avatar{display:flex;align-items:center;justify-content:center;width:58px;height:58px;margin:0 auto;border:5px solid white;border-radius:18px;background:#e5ecff;color:var(--color-brand);box-shadow:0 3px 10px #24324b07}.parent-shell .role-avatar{color:#157f74;background:#e3f1e8}.role-side-nav{display:flex;flex-direction:column;gap:7px}.role-side-nav a{display:flex;align-items:center;gap:12px;border-radius:11px;padding:12px 15px;color:var(--color-ink-2);font-size:13px;text-decoration:none}.role-side-nav a:hover{background:#f8f9fc}.role-side-nav a.is-active{background:var(--color-brand-soft);font-weight:600;color:var(--color-brand)}.role-sidebar-note{margin-top:auto;padding:30px 15px 20px;color:#a1afbd}.role-sidebar-note p{margin-top:10px;font-size:11px;line-height:1.9;color:var(--color-ink-3)}.role-logout{display:flex;align-items:center;gap:10px;margin-top:12px;padding:17px 14px 6px;border-top:1px solid var(--color-line);font-size:12px;color:var(--color-ink-2)}.role-body{flex:1}.role-header{height:74px;padding:0 36px;background:#ffffffd9}.role-mobile-brand,.role-mobile-child,.role-mobile-logout{display:none}.mobile-main{padding:34px 36px 48px}.role-bottom-nav{display:none}.role-page-footer{display:block;max-width:1008px;margin:0 auto;padding:0 36px 25px;text-align:center;font-size:11px;color:#a2abbb}}
+</style>

@@ -2,8 +2,16 @@ import type { FastifyInstance } from 'fastify';
 import { db } from '../db.js';
 import { HttpError, requireAuth } from '../auth.js';
 import { notifyCourseParents } from '../lib/notify.js';
+import { assertSchoolRow, assertSession, schoolIdOf } from '../lib/school-scope.js';
 
 const guard = { preHandler: requireAuth('admin') };
+
+async function ensureNoTeacherAttendance(sessionId: number) {
+  const record = await db.selectFrom('teacher_attendance').select('session_id').where('session_id', '=', sessionId).executeTakeFirst();
+  if (record) {
+    throw new HttpError(409, 'TEACHER_ATTENDANCE_EXISTS', '该课次已有教师考勤，不能直接调课或停课，请先核实考勤记录');
+  }
+}
 
 interface ScheduleInput {
   courseId: number;
@@ -47,24 +55,24 @@ function datesBetween(startDate: string, endDate: string, weekdays: number[]): s
   return out;
 }
 
-async function findConflicts(input: ScheduleInput): Promise<Array<{ date: string; message: string }>> {
-  const course = await db
-    .selectFrom('courses as c')
-    .leftJoin('class_groups as g', 'g.course_id', 'c.id')
-    .select(['c.teacher_id', 'g.room as groupRoom', 'g.teacher_id as groupTeacher'])
-    .where('c.id', '=', input.courseId)
-    .executeTakeFirst();
-  if (!course) throw new HttpError(404, 'NOT_FOUND', '课程不存在');
-
-  const teacherId = course.groupTeacher ?? course.teacher_id;
-  const room = input.room ?? course.groupRoom ?? null;
+async function findConflicts(input: ScheduleInput, schoolId: number): Promise<Array<{ date: string; message: string }>> {
+  const course = await assertSchoolRow('courses', input.courseId, schoolId);
+  let groupQuery = db.selectFrom('class_groups').selectAll().where('course_id', '=', course.id);
+  if (input.groupId) groupQuery = groupQuery.where('id', '=', input.groupId);
+  const group = await groupQuery.executeTakeFirst();
+  if (input.groupId && !group) throw new HttpError(404, 'NOT_FOUND', '教学班不存在');
+  const teacherId = group?.teacher_id ?? course.teacher_id;
+  if (teacherId) await assertSchoolRow('teachers', teacherId, schoolId);
+  const room = input.room ?? group?.room ?? null;
   const dates = datesBetween(input.startDate, input.endDate, input.weekdays);
   if (dates.length === 0) return [];
 
   const existing = await db
     .selectFrom('sessions as s')
-    .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
-    .leftJoin('teachers as t', 't.id', 'g.teacher_id')
+    .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
+      .innerJoin('courses as scoped_course', 'scoped_course.id', 's.course_id')
+      .where('scoped_course.school_id', '=', schoolId)
+    .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'g.teacher_id').on('t.school_id', '=', schoolId))
     .select(['s.date', 's.start_time', 's.end_time', 'g.room', 'g.teacher_id', 't.name as teacherName'])
     .where('s.date', '>=', input.startDate)
     .where('s.date', '<=', input.endDate)
@@ -92,6 +100,7 @@ async function findConflicts(input: ScheduleInput): Promise<Array<{ date: string
 
 export async function scheduleRoutes(app: FastifyInstance) {
   app.post('/api/admin/schedule/preview', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     const input: ScheduleInput = {
       courseId: num(b.courseId),
@@ -109,11 +118,12 @@ export async function scheduleRoutes(app: FastifyInstance) {
     if (toMin(input.endTime) <= toMin(input.startTime)) throw new HttpError(400, 'BAD_INPUT', '结束时间必须晚于开始时间');
 
     const dates = datesBetween(input.startDate, input.endDate, input.weekdays);
-    const conflicts = await findConflicts(input);
+    const conflicts = await findConflicts(input, schoolId);
     return { dates, count: dates.length, conflicts, ok: conflicts.length === 0 };
   });
 
   app.post('/api/admin/schedule/generate', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     const input: ScheduleInput = {
       courseId: num(b.courseId),
@@ -125,7 +135,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
       endTime: String(b.endTime || ''),
       room: b.room ? String(b.room) : null,
     };
-    const conflicts = await findConflicts(input);
+    const conflicts = await findConflicts(input, schoolId);
     if (conflicts.length > 0) throw new HttpError(409, 'CONFLICT', `存在 ${conflicts.length} 处冲突，请先调整`);
 
     let groupId = input.groupId;
@@ -160,12 +170,14 @@ export async function scheduleRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/admin/sessions', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
     let query = db
       .selectFrom('sessions as s')
       .innerJoin('courses as c', 'c.id', 's.course_id')
-      .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
-      .leftJoin('teachers as t', 't.id', 'g.teacher_id')
+      .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
+      .where('c.school_id', '=', schoolId)
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'g.teacher_id').on('t.school_id', '=', schoolId))
       .select([
         's.id',
         's.course_id',
@@ -182,7 +194,10 @@ export async function scheduleRoutes(app: FastifyInstance) {
       .orderBy('s.date')
       .orderBy('s.start_time');
     if (q.date) query = query.where('s.date', '=', String(q.date));
-    if (q.courseId) query = query.where('s.course_id', '=', num(q.courseId));
+    if (q.courseId) {
+      await assertSchoolRow('courses', num(q.courseId), schoolId);
+      query = query.where('s.course_id', '=', num(q.courseId));
+    }
     if (q.from) query = query.where('s.date', '>=', String(q.from));
     if (q.to) query = query.where('s.date', '<=', String(q.to));
     return query.limit(500).execute();
@@ -190,14 +205,20 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
   // 停课
   app.post('/api/admin/sessions/:id/cancel', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
     const reason = String((req.body as any)?.reason || '');
-    const s = await db.selectFrom('sessions').selectAll().where('id', '=', id).executeTakeFirst();
-    if (!s) throw new HttpError(404, 'NOT_FOUND', '课次不存在');
+    const s = await assertSession(id, schoolId);
     if (s.status === 'cancelled') throw new HttpError(400, 'BAD_STATE', '该课次已停课');
     if (s.status === 'done') throw new HttpError(400, 'BAD_STATE', '已完成的课次不能停课，请走更正流程');
+    await ensureNoTeacherAttendance(id);
 
-    await db.updateTable('sessions').set({ status: 'cancelled' }).where('id', '=', id).execute();
+    const updated = await db.updateTable('sessions').set({ status: 'cancelled' }).where('id', '=', id).where('course_id', '=', s.course_id)
+      .where(({ not, exists, selectFrom }) => not(exists(selectFrom('teacher_attendance').select('session_id').where('session_id', '=', id))))
+      .executeTakeFirst();
+    if (updated.numUpdatedRows === 0n) {
+      throw new HttpError(409, 'TEACHER_ATTENDANCE_EXISTS', '课次已有教师考勤，请刷新后核实');
+    }
     await db
       .insertInto('session_changes')
       .values({ session_id: id, type: 'cancel', before_data: JSON.stringify(s), after_data: null, reason })
@@ -214,6 +235,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
   // 调课
   app.post('/api/admin/sessions/:id/reschedule', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
     const b = req.body as any;
     const date = String(b?.date || '');
@@ -224,10 +246,10 @@ export async function scheduleRoutes(app: FastifyInstance) {
     if (!date || !startTime || !endTime) throw new HttpError(400, 'BAD_INPUT', '请选择新的日期和时间');
     if (toMin(endTime) <= toMin(startTime)) throw new HttpError(400, 'BAD_INPUT', '结束时间必须晚于开始时间');
 
-    const s = await db.selectFrom('sessions').selectAll().where('id', '=', id).executeTakeFirst();
-    if (!s) throw new HttpError(404, 'NOT_FOUND', '课次不存在');
+    const s = await assertSession(id, schoolId);
     if (s.status === 'cancelled') throw new HttpError(400, 'BAD_STATE', '已停课的课次不能调课');
     if (s.status === 'done') throw new HttpError(400, 'BAD_STATE', '已完成的课次不能调课');
+    await ensureNoTeacherAttendance(id);
 
     const g = await db
       .selectFrom('class_groups')
@@ -237,7 +259,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
     const sameDay = await db
       .selectFrom('sessions as s')
-      .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
+      .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
+      .innerJoin('courses as scoped_course', 'scoped_course.id', 's.course_id')
+      .where('scoped_course.school_id', '=', schoolId)
       .select(['s.id', 's.start_time', 's.end_time', 'g.teacher_id', 'g.room'])
       .where('s.date', '=', date)
       .where('s.id', '!=', id)
@@ -251,11 +275,15 @@ export async function scheduleRoutes(app: FastifyInstance) {
     if (rHit) throw new HttpError(409, 'CONFLICT', `教室 ${g?.room} 在该时段已被占用`);
 
     const wd = parseDate(date).getDay() === 0 ? 7 : parseDate(date).getDay();
-    await db
+    const updated = await db
       .updateTable('sessions')
       .set({ date, weekday: wd, start_time: startTime, end_time: endTime, status: 'planned' })
-      .where('id', '=', id)
-      .execute();
+      .where('id', '=', id).where('course_id', '=', s.course_id)
+      .where(({ not, exists, selectFrom }) => not(exists(selectFrom('teacher_attendance').select('session_id').where('session_id', '=', id))))
+      .executeTakeFirst();
+    if (updated.numUpdatedRows === 0n) {
+      throw new HttpError(409, 'TEACHER_ATTENDANCE_EXISTS', '课次已有教师考勤，请刷新后核实');
+    }
     await db
       .insertInto('session_changes')
       .values({
@@ -278,7 +306,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
   // 课次变更记录
   app.get('/api/admin/sessions/:id/changes', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSession(id, schoolId);
     return db.selectFrom('session_changes').selectAll().where('session_id', '=', id).orderBy('id', 'desc').execute();
   });
 }

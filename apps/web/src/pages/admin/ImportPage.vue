@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import * as XLSX from 'xlsx';
 import { api } from '../../lib/api';
 import { toast } from '../../lib/toast';
+import AppIcon from '../../ui/AppIcon.vue';
 
 const type = ref<'students' | 'teachers' | 'classes'>('students');
 const text = ref('');
@@ -99,10 +100,11 @@ async function submit() {
 
 <template>
   <div>
-    <div class="mb-4 text-[20px] font-semibold">数据导入</div>
+    <div class="page-heading"><div><div class="eyebrow">开课前的准备</div><h1 class="page-title">批量导入资料</h1><p class="page-description">准备好班级、教师与学生信息，通过文件或粘贴快速录入。</p></div></div>
+    <div class="mb-5 grid gap-3 sm:grid-cols-3"><div class="flex items-center gap-3 rounded-xl border border-line bg-white p-4"><span class="icon-tile icon-tile-blue"><AppIcon name="list" :size="18" /></span><div><div class="text-[13px] font-medium">1. 选择资料类型</div><div class="text-[12px] text-ink-3">建议先班级，再教师与学生</div></div></div><div class="flex items-center gap-3 rounded-xl border border-line bg-white p-4"><span class="icon-tile icon-tile-mint"><AppIcon name="upload" :size="18" /></span><div><div class="text-[13px] font-medium">2. 上传并查看预览</div><div class="text-[12px] text-ink-3">此时尚未写入系统</div></div></div><div class="flex items-center gap-3 rounded-xl border border-line bg-white p-4"><span class="icon-tile icon-tile-amber"><AppIcon name="check-circle" :size="18" /></span><div><div class="text-[13px] font-medium">3. 导入并核对结果</div><div class="text-[12px] text-ink-3">按提示修正失败行</div></div></div></div>
 
-    <div class="grid gap-4 lg:grid-cols-[1fr_360px]">
-      <div class="card card-pad">
+    <div class="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div class="card min-w-0 p-5">
         <div class="mb-3 flex flex-wrap items-center gap-2">
           <button v-for="(v, k) in specs" :key="k" class="btn btn-sm" :class="type === k ? 'btn-primary' : 'btn-secondary'" @click="type = k as any; reset(); text = ''">
             {{ v.label }}
@@ -113,7 +115,7 @@ async function submit() {
         <label
           class="mb-3 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-line bg-[#fafbfc] py-6 text-center hover:border-brand"
         >
-          <div class="text-[14px] text-ink">点击上传 Excel / CSV 文件</div>
+          <span class="icon-tile icon-tile-blue mb-3"><AppIcon name="upload" :size="23" /></span><div class="text-[14px] font-medium text-ink">点击上传 Excel / CSV 文件</div>
           <div class="mt-1 text-[12px] text-ink-3">支持 .xlsx、.xls、.csv，取第一个工作表</div>
           <div v-if="fileName" class="mt-2 text-[12px] text-brand">已选择：{{ fileName }}</div>
           <input type="file" accept=".xlsx,.xls,.csv" class="hidden" @change="onFile" />
@@ -127,7 +129,7 @@ async function submit() {
           @input="fileRows = null; fileName = ''; result = null"
         />
 
-        <div class="mt-3 flex items-center gap-3">
+        <div class="mt-3 flex flex-wrap items-center gap-3">
           <button class="btn btn-primary" :disabled="loading || !rows.length" @click="submit">
             {{ loading ? '导入中…' : `导入 ${rows.length} 行` }}
           </button>
@@ -136,7 +138,7 @@ async function submit() {
       </div>
 
       <div class="card">
-        <div class="border-b border-line px-4 py-3 text-[15px] font-medium">导入结果</div>
+        <div class="border-b border-line px-5 py-4"><h2 class="section-title">导入结果</h2><p class="section-subtitle">提交后查看成功与失败情况</p></div>
         <div class="p-4">
           <div v-if="!result" class="py-10 text-center text-[13px] text-ink-3">还没有导入记录</div>
           <template v-else>
@@ -160,8 +162,8 @@ async function submit() {
     </div>
 
     <div class="card mt-4 card-pad">
-      <div class="mb-2 text-[14px] font-medium">预览（前 10 行）</div>
-      <table class="table-base">
+      <div class="mb-3"><h2 class="section-title">内容预览 <span class="text-[12px] font-normal text-ink-3">前 10 行</span></h2><p class="section-subtitle">请核对字段顺序，确认后点击导入。</p></div>
+      <div class="overflow-x-auto"><table class="table-base min-w-[500px]">
         <tbody>
           <tr v-for="(r, i) in rows.slice(0, 10)" :key="i">
             <td class="w-10 text-ink-3">{{ i + 1 }}</td>
@@ -169,7 +171,7 @@ async function submit() {
           </tr>
           <tr v-if="!rows.length"><td class="py-6 text-center text-ink-3">上传文件或粘贴数据后这里会显示预览</td></tr>
         </tbody>
-      </table>
+      </table></div>
     </div>
   </div>
 </template>

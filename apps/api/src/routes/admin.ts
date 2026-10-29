@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { sql } from 'kysely';
 import { db, todayStr } from '../db.js';
 import { HttpError, hashPassword, requireAuth } from '../auth.js';
+import { assertSchoolRow, schoolIdOf } from '../lib/school-scope.js';
 
 const guard = { preHandler: requireAuth('admin') };
 
@@ -11,19 +11,20 @@ function num(v: unknown, fallback = 0): number {
 }
 
 export async function adminRoutes(app: FastifyInstance) {
-  app.get('/api/admin/dashboard', guard, async () => {
+  app.get('/api/admin/dashboard', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const [students, classes, teachers, courses] = await Promise.all([
-      db.selectFrom('students').select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'active').executeTakeFirst(),
-      db.selectFrom('classes').select((e) => e.fn.countAll<number>().as('c')).executeTakeFirst(),
-      db.selectFrom('teachers').select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'active').executeTakeFirst(),
-      db.selectFrom('courses').select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'published').executeTakeFirst(),
+      db.selectFrom('students').where('school_id', '=', schoolId).select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'active').executeTakeFirst(),
+      db.selectFrom('classes').where('school_id', '=', schoolId).select((e) => e.fn.countAll<number>().as('c')).executeTakeFirst(),
+      db.selectFrom('teachers').where('school_id', '=', schoolId).select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'active').executeTakeFirst(),
+      db.selectFrom('courses').where('school_id', '=', schoolId).select((e) => e.fn.countAll<number>().as('c')).where('status', '=', 'published').executeTakeFirst(),
     ]);
     const today = todayStr();
     const todaySessions = await db
       .selectFrom('sessions as s')
       .innerJoin('courses as c', 'c.id', 's.course_id')
-      .innerJoin('class_groups as g', 'g.id', 's.class_group_id')
-      .leftJoin('teachers as t', 't.id', 'g.teacher_id')
+      .innerJoin('class_groups as g', (join) => join.onRef('g.id', '=', 's.class_group_id').onRef('g.course_id', '=', 's.course_id'))
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'g.teacher_id').on('t.school_id', '=', schoolId))
       .select([
         's.id',
         's.course_id',
@@ -35,6 +36,7 @@ export async function adminRoutes(app: FastifyInstance) {
         'g.room',
         't.name as teacherName',
       ])
+      .where('c.school_id', '=', schoolId)
       .where('s.date', '=', today)
       .orderBy('s.start_time')
       .execute();
@@ -42,13 +44,13 @@ export async function adminRoutes(app: FastifyInstance) {
     const withCounts = [];
     for (const s of todaySessions) {
       const enrolled = await db
-        .selectFrom('enroll_records')
+        .selectFrom('enroll_records').innerJoin('students as enrolled_student', 'enrolled_student.id', 'enroll_records.student_id').where('enrolled_student.school_id', '=', schoolId)
         .select((e) => e.fn.countAll<number>().as('c'))
         .where('course_id', '=', s.course_id)
-        .where('status', '=', 'effective')
+        .where('enroll_records.status', '=', 'effective')
         .executeTakeFirst();
       const done = await db
-        .selectFrom('attendance')
+        .selectFrom('attendance').innerJoin('students as marked_student', 'marked_student.id', 'attendance.student_id').where('marked_student.school_id', '=', schoolId)
         .select((e) => e.fn.countAll<number>().as('c'))
         .where('session_id', '=', s.id)
         .executeTakeFirst();
@@ -68,10 +70,11 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ---------- 班级 ----------
-  app.get('/api/admin/classes', guard, async () => {
+  app.get('/api/admin/classes', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     return db
-      .selectFrom('classes as c')
-      .leftJoin('teachers as t', 't.id', 'c.head_teacher_id')
+      .selectFrom('classes as c').where('c.school_id', '=', schoolId)
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.head_teacher_id').on('t.school_id', '=', schoolId))
       .select(['c.id', 'c.grade', 'c.name', 'c.head_teacher_id', 't.name as headTeacherName'])
       .orderBy('c.grade')
       .orderBy('c.name')
@@ -79,20 +82,25 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/admin/classes', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
+    if (b?.headTeacherId) await assertSchoolRow('teachers', num(b.headTeacherId), schoolId);
     if (!b?.grade || !b?.name) throw new HttpError(400, 'BAD_INPUT', '年级和班级名称必填');
     return db
       .insertInto('classes')
-      .values({ school_id: 1, grade: String(b.grade), name: String(b.name), head_teacher_id: b.headTeacherId ? num(b.headTeacherId) : null })
+      .values({ school_id: schoolId, grade: String(b.grade), name: String(b.name), head_teacher_id: b.headTeacherId ? num(b.headTeacherId) : null })
       .returningAll()
       .executeTakeFirstOrThrow();
   });
 
   app.put('/api/admin/classes/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('classes', id, schoolId);
     const b = req.body as any;
+    if (b?.headTeacherId) await assertSchoolRow('teachers', num(b.headTeacherId), schoolId);
     await db
-      .updateTable('classes')
+      .updateTable('classes').where('school_id', '=', schoolId)
       .set({ grade: String(b.grade), name: String(b.name), head_teacher_id: b.headTeacherId ? num(b.headTeacherId) : null })
       .where('id', '=', id)
       .execute();
@@ -101,16 +109,17 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ---------- 学生 ----------
   app.get('/api/admin/students', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
     const page = Math.max(1, num(q.page, 1));
     const size = Math.min(100, Math.max(5, num(q.size, 20)));
 
     const countQuery = db
-      .selectFrom('students as s')
+      .selectFrom('students as s').where('s.school_id', '=', schoolId)
       .select((e) => e.fn.countAll<number>().as('c'));
     const listQuery = db
-      .selectFrom('students as s')
-      .leftJoin('classes as c', 'c.id', 's.class_id')
+      .selectFrom('students as s').where('s.school_id', '=', schoolId)
+      .leftJoin('classes as c', (join) => join.onRef('c.id', '=', 's.class_id').on('c.school_id', '=', schoolId))
       .select(['s.id', 's.code', 's.name', 's.class_id', 's.status', 'c.name as className', 'c.grade']);
 
     const applyFilter = (qb: any) =>
@@ -123,10 +132,11 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // 导出学生（CSV，带 BOM 便于 Excel 打开）
   app.get('/api/admin/students/export', guard, async (req, reply) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
     let query = db
-      .selectFrom('students as s')
-      .leftJoin('classes as c', 'c.id', 's.class_id')
+      .selectFrom('students as s').where('s.school_id', '=', schoolId)
+      .leftJoin('classes as c', (join) => join.onRef('c.id', '=', 's.class_id').on('c.school_id', '=', schoolId))
       .select(['s.code', 's.name', 'c.grade', 'c.name as className', 's.status'])
       .orderBy('s.code');
     if (q.q) query = query.where((eb) => eb.or([eb('s.name', 'like', `%${q.q}%`), eb('s.code', 'like', `%${q.q}%`)]));
@@ -147,20 +157,25 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/admin/students', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
+    if (b?.classId) await assertSchoolRow('classes', num(b.classId), schoolId);
     if (!b?.code || !b?.name) throw new HttpError(400, 'BAD_INPUT', '学号和姓名必填');
     return db
       .insertInto('students')
-      .values({ school_id: 1, code: String(b.code), name: String(b.name), class_id: b.classId ? num(b.classId) : null, status: 'active' })
+      .values({ school_id: schoolId, code: String(b.code), name: String(b.name), class_id: b.classId ? num(b.classId) : null, status: 'active' })
       .returningAll()
       .executeTakeFirstOrThrow();
   });
 
   app.put('/api/admin/students/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('students', id, schoolId);
     const b = req.body as any;
+    if (b?.classId) await assertSchoolRow('classes', num(b.classId), schoolId);
     await db
-      .updateTable('students')
+      .updateTable('students').where('school_id', '=', schoolId)
       .set({ name: String(b.name), class_id: b.classId ? num(b.classId) : null, status: b.status || 'active' })
       .where('id', '=', id)
       .execute();
@@ -168,25 +183,29 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ---------- 教师 ----------
-  app.get('/api/admin/teachers', guard, async () => {
-    return db.selectFrom('teachers').selectAll().orderBy('id').execute();
+  app.get('/api/admin/teachers', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
+    return db.selectFrom('teachers').where('school_id', '=', schoolId).selectAll().orderBy('id').execute();
   });
 
   app.post('/api/admin/teachers', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     if (!b?.name || !b?.phone) throw new HttpError(400, 'BAD_INPUT', '姓名和手机号必填');
     return db
       .insertInto('teachers')
-      .values({ school_id: 1, name: String(b.name), phone: String(b.phone), status: 'active' })
+      .values({ school_id: schoolId, name: String(b.name), phone: String(b.phone), status: 'active' })
       .returningAll()
       .executeTakeFirstOrThrow();
   });
 
   app.put('/api/admin/teachers/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('teachers', id, schoolId);
     const b = req.body as any;
     await db
-      .updateTable('teachers')
+      .updateTable('teachers').where('school_id', '=', schoolId)
       .set({ name: String(b.name), phone: String(b.phone), status: b.status || 'active' })
       .where('id', '=', id)
       .execute();
@@ -194,12 +213,14 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // ---------- 监护人 ----------
-  app.get('/api/admin/guardians', guard, async () => {
-    const guardians = await db.selectFrom('guardians').selectAll().orderBy('id').execute();
+  app.get('/api/admin/guardians', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
+    const guardians = await db.selectFrom('guardians').where('school_id', '=', schoolId).selectAll().orderBy('id').execute();
     const links = await db
       .selectFrom('student_guardians as sg')
       .innerJoin('students as s', 's.id', 'sg.student_id')
       .select(['sg.guardian_id', 'sg.relation', 's.id as studentId', 's.name as studentName'])
+      .where('s.school_id', '=', schoolId)
       .execute();
     return guardians.map((g) => ({
       ...g,
@@ -209,12 +230,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ---------- 课程 ----------
   app.get('/api/admin/courses', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const q = req.query as any;
     const page = Math.max(1, num(q.page, 1));
     const size = Math.min(100, Math.max(5, num(q.size, 20)));
 
     const build = () => {
-      let qb = db.selectFrom('courses as c').leftJoin('teachers as t', 't.id', 'c.teacher_id');
+      let qb = db.selectFrom('courses as c').where('c.school_id', '=', schoolId).leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId));
       if (q.q) qb = qb.where('c.name', 'like', `%${q.q}%`);
       return qb;
     };
@@ -241,9 +263,10 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // 下拉选项（不分页）
-  app.get('/api/admin/courses/options', guard, async () => {
+  app.get('/api/admin/courses/options', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     return db
-      .selectFrom('courses')
+      .selectFrom('courses').where('school_id', '=', schoolId)
       .select(['id', 'name', 'price_cents', 'capacity'])
       .where('status', '=', 'published')
       .orderBy('id', 'desc')
@@ -251,13 +274,16 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/admin/courses', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
+    if (b?.teacherId) await assertSchoolRow('teachers', num(b.teacherId), schoolId);
     if (!b?.name) throw new HttpError(400, 'BAD_INPUT', '课程名称必填');
+    const term = b.term ? String(b.term) : (await db.selectFrom('school').select('term').where('id', '=', schoolId).executeTakeFirstOrThrow()).term;
     return db
       .insertInto('courses')
       .values({
-        school_id: 1,
-        term: String(b.term || '2026-秋'),
+        school_id: schoolId,
+        term,
         name: String(b.name),
         grade: b.grade ? String(b.grade) : null,
         teacher_id: b.teacherId ? num(b.teacherId) : null,
@@ -272,10 +298,13 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.put('/api/admin/courses/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('courses', id, schoolId);
     const b = req.body as any;
+    if (b?.teacherId) await assertSchoolRow('teachers', num(b.teacherId), schoolId);
     await db
-      .updateTable('courses')
+      .updateTable('courses').where('school_id', '=', schoolId)
       .set({
         name: String(b.name),
         grade: b.grade ? String(b.grade) : null,
@@ -292,10 +321,11 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/admin/courses/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
     const course = await db
-      .selectFrom('courses as c')
-      .leftJoin('teachers as t', 't.id', 'c.teacher_id')
+      .selectFrom('courses as c').where('c.school_id', '=', schoolId)
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId))
       .selectAll('c')
       .select(['t.name as teacherName'])
       .where('c.id', '=', id)
@@ -303,22 +333,23 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!course) throw new HttpError(404, 'NOT_FOUND', '课程不存在');
     const groups = await db.selectFrom('class_groups').selectAll().where('course_id', '=', id).execute();
     const cnt = await db
-      .selectFrom('sessions')
+      .selectFrom('sessions').innerJoin('class_groups as scoped_group', (join) => join.onRef('scoped_group.id', '=', 'sessions.class_group_id').onRef('scoped_group.course_id', '=', 'sessions.course_id'))
       .select((e) => e.fn.countAll<number>().as('c'))
-      .where('course_id', '=', id)
-      .where('status', '!=', 'cancelled')
+      .where('sessions.course_id', '=', id)
+      .where('sessions.status', '!=', 'cancelled')
       .executeTakeFirst();
     const enrolled = await db
-      .selectFrom('enroll_records')
+      .selectFrom('enroll_records').innerJoin('students as enrolled_student', 'enrolled_student.id', 'enroll_records.student_id').where('enrolled_student.school_id', '=', schoolId)
       .select((e) => e.fn.countAll<number>().as('c'))
       .where('course_id', '=', id)
-      .where('status', '=', 'effective')
+      .where('enroll_records.status', '=', 'effective')
       .executeTakeFirst();
     return { ...course, groups, sessionCount: Number(cnt?.c ?? 0), enrolled: Number(enrolled?.c ?? 0) };
   });
 
   // ---------- 批量导入 ----------
   app.post('/api/admin/import/:type', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const type = (req.params as any).type as string;
     const rows = ((req.body as any)?.rows ?? []) as any[];
     if (!Array.isArray(rows) || rows.length === 0) throw new HttpError(400, 'BAD_INPUT', '没有可导入的数据');
@@ -331,49 +362,51 @@ export async function adminRoutes(app: FastifyInstance) {
       try {
         if (type === 'teachers') {
           if (!r.name || !r.phone) throw new Error('姓名或手机号为空');
-          await db.insertInto('teachers').values({ school_id: 1, name: r.name, phone: String(r.phone), status: 'active' }).execute();
+          await db.insertInto('teachers').values({ school_id: schoolId, name: r.name, phone: String(r.phone), status: 'active' }).execute();
         } else if (type === 'classes') {
           if (!r.grade || !r.name) throw new Error('年级或班级为空');
           const exists = await db
-            .selectFrom('classes')
+            .selectFrom('classes').where('school_id', '=', schoolId)
             .select('id')
             .where('grade', '=', r.grade)
             .where('name', '=', r.name)
             .executeTakeFirst();
           if (exists) throw new Error('班级已存在');
-          await db.insertInto('classes').values({ school_id: 1, grade: r.grade, name: r.name, head_teacher_id: null }).execute();
+          await db.insertInto('classes').values({ school_id: schoolId, grade: r.grade, name: r.name, head_teacher_id: null }).execute();
         } else if (type === 'students') {
           if (!r.code || !r.name) throw new Error('学号或姓名为空');
           let classId: number | null = null;
           if (r.className) {
-            const cls = await db.selectFrom('classes').select(['id', 'name']).execute();
+            const cls = await db.selectFrom('classes').where('school_id', '=', schoolId).select(['id', 'name']).execute();
             const found = cls.find((c) => c.name === r.className);
             classId = found ? found.id : null;
           }
           const sid = await db
             .insertInto('students')
-            .values({ school_id: 1, code: String(r.code), name: r.name, class_id: classId, status: 'active' })
+            .values({ school_id: schoolId, code: String(r.code), name: r.name, class_id: classId, status: 'active' })
             .returning('id')
             .executeTakeFirstOrThrow();
 
           if (r.guardianPhone) {
             const phone = String(r.guardianPhone).trim();
-            let g = await db.selectFrom('guardians').selectAll().where('phone', '=', phone).executeTakeFirst();
+            let g = await db.selectFrom('guardians').where('school_id', '=', schoolId).selectAll().where('phone', '=', phone).executeTakeFirst();
             if (!g) {
               const gid = await db
                 .insertInto('guardians')
-                .values({ school_id: 1, name: r.guardianName || '家长', phone })
+                .values({ school_id: schoolId, name: r.guardianName || '家长', phone })
                 .returningAll()
                 .executeTakeFirstOrThrow();
               g = gid;
             }
             // 自动开通家长账号：手机号登录，默认密码 123456
-            const exists = await db.selectFrom('users').select('id').where('phone', '=', phone).executeTakeFirst();
+            const exists = await db.selectFrom('users').select('id').where('school_id', '=', schoolId).where('phone', '=', phone).executeTakeFirst();
             if (!exists) {
               await db
                 .insertInto('users')
                 .values({
                   phone,
+                  school_id: schoolId,
+                  status: 'active',
                   name: r.guardianName || '家长',
                   role: 'parent',
                   password_hash: hashPassword('123456'),

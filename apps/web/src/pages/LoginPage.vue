@@ -1,71 +1,69 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { login, homeOf } from '../lib/auth';
-import { toast } from '../lib/toast';
-
+import AppIcon from '../ui/AppIcon.vue';
+import AppSelect from '../ui/AppSelect.vue';
+import { api } from '../lib/api';
+const router = useRouter();
 const phone = ref('13800000000');
 const password = ref('admin123');
+const role = ref('admin');
+const showPassword = ref(false);
 const loading = ref(false);
-const router = useRouter();
-
+const error = ref('');
+interface LoginSchool { id: number; code: string; name: string; term: string }
+const schools = ref<LoginSchool[]>([]);
+const schoolsLoading = ref(false);
+const schoolsError = ref('');
+const schoolCode = ref('sunshine');
+const currentSchool = computed(() => schools.value.find(school => school.code === schoolCode.value));
+const schoolOptions = computed(() => schools.value.map(school => ({ value: school.code, label: `${school.name} · ${school.term}` })));
 const demos = [
-  { label: '管理员', phone: '13800000000', password: 'admin123' },
-  { label: '教师', phone: '13900000001', password: '123456' },
-  { label: '家长', phone: '13700000001', password: '123456' },
+  { id: 'admin', label: '管理员', icon: 'school', description: '安排课程，掌握服务进展', phone: '13800000000', password: 'admin123' },
+  { id: 'teacher', label: '教师', icon: 'book', description: '专注当日教学，轻松完成考勤', phone: '13900000001', password: '123456' },
+  { id: 'parent', label: '家长', icon: 'leaf', description: '为孩子选好课，看清每一天的安排', phone: '13700000001', password: '123456' },
+  { id: 'operator', label: '运营', icon: 'shield', description: '开通学校，交付账号，关注服务进展', phone: '13600000000', password: 'ops123456' },
 ];
-
-function fill(d: (typeof demos)[number]) {
-  phone.value = d.phone;
-  password.value = d.password;
+const currentRole = computed(() => demos.find(d => d.id === role.value)!);
+function choose(d: typeof demos[number]) { role.value = d.id; phone.value = d.phone; password.value = d.password; error.value = ''; if (d.id !== 'operator' && schools.value.some(school => school.code === 'sunshine')) schoolCode.value = 'sunshine'; }
+async function loadSchools() {
+  if (schoolsLoading.value) return;
+  schoolsLoading.value = true; schoolsError.value = '';
+  try { schools.value = await api.get<LoginSchool[]>('/api/public/schools'); if (!schools.value.some(school => school.code === schoolCode.value)) schoolCode.value = schools.value[0]?.code || ''; }
+  catch (e) { schoolsError.value = e instanceof Error ? e.message : '学校列表暂时无法加载'; }
+  finally { schoolsLoading.value = false; }
 }
-
 async function submit() {
-  if (!phone.value || !password.value) return toast('请输入手机号和密码', 'error');
+  if (loading.value) return;
+  if (!phone.value.trim() || !password.value) { error.value = '请填写手机号和密码'; return; }
+  if (role.value !== 'operator' && (schoolsLoading.value || !currentSchool.value)) { error.value = '请先选择所属学校'; return; }
   loading.value = true;
+  error.value = '';
   try {
-    const me = await login(phone.value.trim(), password.value);
-    if (me.mustChangePassword) router.replace('/change-password');
-    else router.replace(homeOf(me.role));
-  } catch (e: any) {
-    toast(e.message || '登录失败', 'error');
-  } finally {
-    loading.value = false;
-  }
+    const me = await login(phone.value.trim(), password.value, role.value === 'operator' ? undefined : schoolCode.value);
+    router.replace(me.mustChangePassword ? '/change-password' : homeOf(me.role));
+  } catch (e: unknown) { error.value = e instanceof Error ? e.message : '暂时无法登录，请重试'; }
+  finally { loading.value = false; }
 }
+onMounted(loadSchools);
 </script>
-
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-bg px-4">
-    <div class="w-full max-w-[380px]">
-      <div class="mb-6 text-center">
-        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-brand text-[22px] text-white">课</div>
-        <div class="text-[20px] font-semibold">课后服务</div>
-        <div class="mt-1 text-[13px] text-ink-3">阳光小学 · 2026 秋季</div>
-      </div>
-
-      <div class="card card-pad">
-        <div class="field">
-          <label class="label">手机号</label>
-          <input v-model="phone" class="input" placeholder="请输入手机号" @keyup.enter="submit" />
-        </div>
-        <div class="field">
-          <label class="label">密码</label>
-          <input v-model="password" type="password" class="input" placeholder="请输入密码" @keyup.enter="submit" />
-        </div>
-        <button class="btn btn-primary btn-block btn-lg mt-2" :disabled="loading" @click="submit">
-          {{ loading ? '登录中…' : '登录' }}
-        </button>
-      </div>
-
-      <div class="mt-4 rounded-xl border border-dashed border-line bg-white/60 p-3">
-        <div class="mb-2 text-[12px] text-ink-3">试用账号（点击填充）</div>
-        <div class="flex gap-2">
-          <button v-for="d in demos" :key="d.phone" class="btn btn-secondary btn-sm flex-1" @click="fill(d)">
-            {{ d.label }}
-          </button>
-        </div>
-      </div>
-    </div>
+  <div class="login-page">
+    <header class="login-header"><a href="/login" class="login-brand"><span><AppIcon name="book" :size="23" /></span>课后服务</a><div class="login-school"><AppIcon :name="role === 'operator' ? 'shield' : 'school'" :size="16" /><span>{{ role === 'operator' ? '平台运营中心' : currentSchool?.name || '学校服务空间' }}</span><span class="school-divider" />{{ role === 'operator' ? '多学校服务' : currentSchool?.term || '连接每一份关心' }}</div></header>
+    <main class="login-content">
+      <section class="login-story" aria-label="课后服务介绍"><div class="story-eyebrow"><span />连接学校、老师与家庭</div><h1>放学后的时光，<br />也有<span>好安排。</span></h1><p class="story-description">从一次选课，到每一天的陪伴。<br />让学校管理更有序，让老师教学更专注，让家长更安心。</p>
+        <div class="login-art" aria-hidden="true"><div class="art-orbit" /><div class="art-sun" /><div class="art-main"><svg viewBox="0 0 400 290" fill="none"><path d="M70 230h260" stroke="#bdcbee" stroke-width="2"/><path d="M92 230V116l108-65 108 65v114" fill="#fff"/><path d="m77 124 123-75 123 75" stroke="#3156d3" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><rect x="120" y="144" width="34" height="35" rx="7" fill="#e9efff"/><rect x="245" y="144" width="34" height="35" rx="7" fill="#e9efff"/><path d="M177 230v-49a23 23 0 0 1 46 0v49" fill="#3156d3"/><circle cx="200" cy="113" r="21" fill="#edf3ff"/><path d="M200 101v13l8 5" stroke="#3156d3" stroke-width="3" stroke-linecap="round"/><path d="M53 230v-55m0 24c-24-2-27-26-24-32 17 0 26 13 24 32Zm0-13c1-18 16-29 26-26 1 17-8 28-26 26Z" fill="#8cbda5" stroke="#7caa94" stroke-width="2"/><path d="M346 230v-38m0 8c-23 0-28-20-25-29 17 1 26 13 25 29Zm0-8c0-20 13-33 26-32 1 21-8 31-26 32Z" fill="#91b6ab" stroke="#7caa94" stroke-width="2"/><path d="M141 230h118" stroke="#2447be" stroke-width="4" stroke-linecap="round"/></svg></div><div class="art-label art-label-course"><span class="icon-tile icon-tile-blue"><AppIcon name="calendar" :size="19" /></span><div><strong>课程有安排</strong><span>每一天，都清晰可见</span></div></div><div class="art-label art-label-care"><span class="icon-tile icon-tile-mint"><AppIcon name="leaf" :size="19" /></span><div><strong>成长有陪伴</strong><span>把关心，放在日常里</span></div></div><div class="art-tiny-cross">+</div></div>
+        <div class="story-pillars"><span><AppIcon name="calendar" :size="16" />有序安排</span><span><AppIcon name="check-circle" :size="16" />清晰记录</span><span><AppIcon name="users" :size="16" />家校同行</span></div>
+      </section>
+      <section class="login-form-card" aria-labelledby="login-title"><div class="login-card-eyebrow">欢迎回来</div><h2 id="login-title">开启今天的课后时光</h2><p class="login-intro">{{ currentRole.description }}</p><div class="login-role-label">选择试用身份</div><div class="login-roles" role="group" aria-label="试用身份"><button v-for="d in demos" :key="d.id" type="button" :aria-pressed="role === d.id" :disabled="loading" :class="{ selected: role === d.id }" @click="choose(d)"><AppIcon :name="d.icon" :size="21" /><span>{{ d.label }}</span><span v-if="role === d.id" class="role-check"><AppIcon name="check" :size="9" /></span></button></div><form @submit.prevent="submit"><div v-if="role !== 'operator'" class="login-field"><label>所属学校</label><AppSelect v-model="schoolCode" :options="schoolOptions" :disabled="loading || schoolsLoading" :placeholder="schoolsLoading ? '正在读取学校…' : '请选择学校'" /><p v-if="schoolsError" class="school-load-feedback" role="alert">{{ schoolsError }}<button type="button" :disabled="schoolsLoading" @click="loadSchools">重新加载</button></p><p v-else-if="!schoolsLoading && !schools.length" class="school-load-feedback">暂无可登录的学校，请联系运营管理员。</p></div><div v-else class="operator-login-note"><AppIcon name="shield" :size="15" />运营账号统一管理学校开通与服务</div><div class="login-field"><label for="login-phone">手机号</label><div class="login-input-wrap"><AppIcon name="user" :size="18" /><input id="login-phone" v-model="phone" type="tel" autocomplete="username" inputmode="tel" placeholder="请输入手机号" :disabled="loading" /></div></div><div class="login-field"><label for="login-password">密码</label><div class="login-input-wrap"><AppIcon name="shield" :size="18" /><input id="login-password" v-model="password" :type="showPassword ? 'text' : 'password'" autocomplete="current-password" placeholder="请输入密码" :disabled="loading" /><button class="password-toggle" type="button" :aria-label="showPassword ? '隐藏密码' : '显示密码'" @click="showPassword = !showPassword"><AppIcon :name="showPassword ? 'eye-off' : 'eye'" :size="18" /></button></div></div><p v-if="error" class="login-error" role="alert"><AppIcon name="alert" :size="16" />{{ error }}</p><button class="btn btn-primary btn-block btn-lg login-submit" type="submit" :disabled="loading || (role !== 'operator' && (schoolsLoading || !currentSchool))"><span>{{ loading ? '正在登录…' : '登录并进入' }}</span><AppIcon v-if="!loading" name="arrow-right" :size="18" /></button></form><div class="login-demo-note"><AppIcon name="info" :size="15" /><span>试用账号已填好，可直接登录体验。<br />{{ role === 'operator' ? '运营账号负责学校开通与管理员交付。' : '其他学校请先选择学校，再输入学校提供的账号。' }}</span></div><div class="login-card-footer"><span class="h-1.5 w-1.5 rounded-full bg-ok" />一个入口，连接每一份关心</div></section>
+    </main><footer class="login-footer">课后服务 · 让放学后的成长，从容发生</footer>
   </div>
 </template>
+<style scoped>
+.login-page{min-height:100vh;display:flex;flex-direction:column;background:#f7f8fc}.login-header{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:1440px;margin:0 auto;padding:30px 54px}.login-brand{display:flex;align-items:center;gap:11px;font-size:20px;font-weight:700;color:var(--color-ink);text-decoration:none}.login-brand>span{display:flex;align-items:center;justify-content:center;width:40px;height:42px;border-radius:12px 12px 12px 4px;background:var(--color-brand);color:white;box-shadow:0 4px 12px #3156d31a}.login-school{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--color-ink-2)}.school-divider{height:12px;width:1px;background:#d7dce8;margin:0 4px}.login-content{display:grid;grid-template-columns:1.15fr 1fr;align-items:center;gap:95px;flex:1;max-width:1150px;width:100%;margin:0 auto;padding:25px 34px 45px}.login-story{min-width:0}.story-eyebrow{display:flex;align-items:center;gap:9px;font-size:12px;letter-spacing:1.2px;color:var(--color-ink-2)}.story-eyebrow>span{width:20px;height:2px;background:var(--color-brand)}h1{font-size:46px;font-weight:700;line-height:1.5;letter-spacing:-1.5px;margin:18px 0 16px}h1 span{color:var(--color-brand)}.story-description{font-size:13px;line-height:2.1;color:var(--color-ink-2)}.login-art{position:relative;height:280px;max-width:460px;margin:20px 0 5px}.art-orbit{position:absolute;inset:15px 42px 20px 50px;border:1px dashed #ccd6ef;border-radius:50%;transform:rotate(-20deg)}.art-main{position:absolute;left:53px;top:32px;width:340px;height:218px;border-radius:150px 150px 24px 24px;background:#e7edfc;overflow:hidden}.art-main svg{position:absolute;width:100%;height:100%;bottom:-4px}.art-sun{position:absolute;right:22px;top:20px;width:55px;height:55px;border-radius:50%;background:#f1dfb1}.art-label{position:absolute;display:flex;align-items:center;gap:10px;padding:12px 15px;border:1px solid #e6eaf2;border-radius:14px;background:#fffffff0;box-shadow:0 9px 24px #24324b08}.art-label .icon-tile{height:36px;width:36px;border-radius:10px}.art-label strong{display:block;font-size:12px;font-weight:600}.art-label div>span{display:block;font-size:10px;color:var(--color-ink-3);margin-top:3px}.art-label-course{left:0;top:49px}.art-label-care{right:0;bottom:12px}.art-tiny-cross{position:absolute;left:32px;bottom:17px;font-size:24px;font-weight:300;color:#97b8aa}.story-pillars{display:flex;gap:30px;margin-top:23px}.story-pillars span{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--color-ink-2)}.login-form-card{width:100%;max-width:430px;justify-self:end;padding:35px 34px 0;border:1px solid #e5e9f3;border-radius:22px;background:white;box-shadow:0 14px 50px #24324b06}.login-card-eyebrow{font-size:12px;color:var(--color-brand);font-weight:500;margin-bottom:9px}h2{font-size:24px;font-weight:700;letter-spacing:-.7px;line-height:1.5}.login-intro{margin-top:8px;font-size:12px;color:var(--color-ink-3)}.login-role-label{margin:27px 0 10px;font-size:12px;font-weight:500;color:var(--color-ink-2)}.login-roles{display:flex;gap:8px;margin-bottom:25px}.login-roles button{position:relative;display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:7px;min-height:78px;border:1px solid var(--color-line);border-radius:12px;color:var(--color-ink-2);font-size:12px;background:#fdfdff;transition:all .15s}.login-roles button:hover{border-color:#a6b8ef}.login-roles button.selected{border-color:var(--color-brand);background:#f2f5ff;color:var(--color-brand);box-shadow:0 0 0 1px #3156d312}.role-check{position:absolute;right:7px;top:7px;display:flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:50%;background:var(--color-brand);color:white}.login-field{margin-bottom:19px}.operator-login-note{display:flex;align-items:center;gap:8px;margin-bottom:19px;padding:11px 12px;border-radius:9px;background:#f5f7ff;font-size:11px;color:#7384a7}.school-load-feedback{margin-top:7px;font-size:11px;color:var(--color-danger);line-height:1.8}.school-load-feedback button{margin-left:8px;color:var(--color-brand)}.login-field label{display:block;font-size:12px;font-weight:500;margin-bottom:8px}.login-input-wrap{display:flex;align-items:center;gap:10px;height:46px;border:1px solid var(--color-line);border-radius:10px;padding:0 13px;color:#9aa5b8;background:#fdfdff}.login-input-wrap:focus-within{border-color:var(--color-brand);box-shadow:0 0 0 3px #3156d30d}.login-input-wrap input{width:100%;min-width:0;outline:none;background:transparent;color:var(--color-ink);font-size:13px}.password-toggle{display:flex;align-items:center;justify-content:center;width:26px;height:32px;flex-shrink:0;color:#96a1b4}.login-submit{margin-top:7px;justify-content:space-between;padding:0 19px;font-size:13px;font-weight:500}.login-error{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-danger);margin:4px 0 15px}.login-demo-note{display:flex;gap:8px;margin-top:18px;padding:11px 12px;background:#f8f9fd;border-radius:9px;color:var(--color-ink-3);font-size:10px;line-height:1.9}.login-demo-note svg{margin-top:3px}.login-card-footer{display:flex;align-items:center;justify-content:center;gap:7px;border-top:1px solid var(--color-line);margin-top:25px;padding:17px 0;font-size:10px;color:#8a96ab}.login-footer{padding:14px 20px 23px;text-align:center;color:#9ba4b5;font-size:11px}
+@media(min-width:1500px){.login-content{gap:140px;max-width:1240px}.login-art{height:310px;max-width:480px}.art-main{height:245px;width:370px}}
+@media(max-width:1000px){.login-content{gap:45px}h1{font-size:38px}.login-art{transform:scale(.88);transform-origin:left center}.login-form-card{padding:30px 26px 0}.story-pillars{gap:18px}}
+@media(max-width:820px){.login-header{padding:23px 25px}.login-content{display:block;padding:12px 20px 25px}.login-story{display:none}.login-form-card{max-width:430px;margin:12px auto 0;min-height:0}.login-school{font-size:10px;gap:6px}.login-school svg,.school-divider{display:none}.login-footer{font-size:10px}.login-brand{font-size:18px}.login-brand>span{width:34px;height:36px}}
+@media(max-width:380px){.login-content{padding:6px 14px 20px}.login-form-card{padding:27px 21px 0}h2{font-size:22px}.login-header{padding:20px}.login-school{display:none}}
+</style>

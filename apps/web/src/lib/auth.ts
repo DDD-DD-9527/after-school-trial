@@ -1,5 +1,6 @@
 import { reactive, computed } from 'vue';
 import { api } from './api';
+import { session } from './session';
 
 export interface Child {
   id: number;
@@ -10,8 +11,10 @@ export interface Child {
 export interface Me {
   id: number;
   name: string;
-  role: 'admin' | 'teacher' | 'parent';
+  role: 'operator' | 'admin' | 'teacher' | 'parent';
   phone: string;
+  schoolId: number | null;
+  school: { id: number; code: string; name: string; term: string; status: 'active' | 'inactive' } | null;
   mustChangePassword?: boolean;
   children?: Child[];
   teacher?: { id: number; name: string } | null;
@@ -31,9 +34,9 @@ export function setChild(id: number) {
   localStorage.setItem('childId', String(id));
 }
 
-export async function login(phone: string, password: string) {
-  const r = await api.post<{ token: string; user: Me }>('/api/auth/login', { phone, password });
-  localStorage.setItem('token', r.token);
+export async function login(phone: string, password: string, schoolCode?: string) {
+  const r = await api.post<{ token: string; user: Me }>('/api/auth/login', { phone, password, ...(schoolCode ? { schoolCode } : {}) });
+  session.setToken(r.token);
   state.me = r.user;
   await loadMe();
   if (state.me?.role === 'parent' && state.me.children?.length) {
@@ -45,10 +48,13 @@ export async function login(phone: string, password: string) {
 }
 
 export async function loadMe() {
-  if (!localStorage.getItem('token')) return null;
+  const token = session.token();
+  if (!token) return null;
   state.loading = true;
   try {
-    state.me = await api.get<Me>('/api/me');
+    const me = await api.get<Me>('/api/me');
+    session.assertCurrent(token);
+    state.me = me;
     return state.me;
   } finally {
     state.loading = false;
@@ -56,13 +62,14 @@ export async function loadMe() {
 }
 
 export function logout() {
-  localStorage.removeItem('token');
+  session.setToken(null);
   localStorage.removeItem('childId');
   state.me = null;
   location.href = '/login';
 }
 
 export function homeOf(role: string) {
+  if (role === 'operator') return '/ops';
   if (role === 'admin') return '/admin';
   if (role === 'teacher') return '/teacher';
   return '/parent';

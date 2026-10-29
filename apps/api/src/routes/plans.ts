@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import { sql } from 'kysely';
 import { db } from '../db.js';
 import { HttpError, requireAuth } from '../auth.js';
+import { assertSchoolRow, schoolIdOf } from '../lib/school-scope.js';
 
 const guard = { preHandler: requireAuth('admin') };
 const num = (v: unknown, f = 0) => {
@@ -10,13 +10,14 @@ const num = (v: unknown, f = 0) => {
 };
 
 export async function planRoutes(app: FastifyInstance) {
-  app.get('/api/admin/plans', guard, async () => {
-    const plans = await db.selectFrom('enroll_plans').selectAll().orderBy('id', 'desc').execute();
+  app.get('/api/admin/plans', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
+    const plans = await db.selectFrom('enroll_plans').where('school_id', '=', schoolId).selectAll().orderBy('id', 'desc').execute();
     const out = [];
     for (const p of plans) {
       const cs = await db
         .selectFrom('enroll_plan_courses as pc')
-        .innerJoin('courses as c', 'c.id', 'pc.course_id')
+        .innerJoin('courses as c', 'c.id', 'pc.course_id').where('c.school_id', '=', schoolId)
         .select(['pc.id', 'pc.course_id', 'pc.capacity', 'pc.enrolled', 'c.name as courseName'])
         .where('pc.plan_id', '=', p.id)
         .execute();
@@ -26,14 +27,18 @@ export async function planRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/admin/plans', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const b = req.body as any;
     if (!b?.name) throw new HttpError(400, 'BAD_INPUT', '计划名称必填');
     if (!b?.startAt || !b?.endAt) throw new HttpError(400, 'BAD_INPUT', '请填写起止时间');
+    const term = b.term ? String(b.term) : (await db.selectFrom('school').select('term').where('id', '=', schoolId).executeTakeFirstOrThrow()).term;
+    const courseIds = [...new Set<number>(Array.isArray(b.courseIds) ? b.courseIds.map((x: unknown) => num(x)) : [])];
+    const courses = await Promise.all(courseIds.map((id) => assertSchoolRow('courses', id, schoolId)));
     const plan = await db
       .insertInto('enroll_plans')
       .values({
-        school_id: 1,
-        term: String(b.term || '2026-秋'),
+        school_id: schoolId,
+        term,
         name: String(b.name),
         start_at: String(b.startAt),
         end_at: String(b.endAt),
@@ -41,10 +46,8 @@ export async function planRoutes(app: FastifyInstance) {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
-    const courseIds: number[] = Array.isArray(b.courseIds) ? b.courseIds.map((x: unknown) => num(x)) : [];
-    for (const cid of courseIds) {
-      const c = await db.selectFrom('courses').selectAll().where('id', '=', cid).executeTakeFirst();
-      if (!c) continue;
+    for (const c of courses) {
+      const cid = c.id;
       await db
         .insertInto('enroll_plan_courses')
         .values({ plan_id: plan.id, course_id: cid, capacity: c.capacity, enrolled: 0 })
@@ -54,31 +57,38 @@ export async function planRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/admin/plans/:id/publish', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('enroll_plans', id, schoolId);
     const cs = await db.selectFrom('enroll_plan_courses').selectAll().where('plan_id', '=', id).execute();
     if (cs.length === 0) throw new HttpError(400, 'NO_COURSE', '请先关联课程');
-    await db.updateTable('enroll_plans').set({ status: 'open' }).where('id', '=', id).execute();
+    await Promise.all(cs.map((link) => assertSchoolRow('courses', link.course_id, schoolId)));
+    await db.updateTable('enroll_plans').where('school_id', '=', schoolId).set({ status: 'open' }).where('id', '=', id).execute();
     return { ok: true };
   });
 
   app.post('/api/admin/plans/:id/pause', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
-    await db.updateTable('enroll_plans').set({ status: 'paused' }).where('id', '=', id).execute();
+    await assertSchoolRow('enroll_plans', id, schoolId);
+    await db.updateTable('enroll_plans').where('school_id', '=', schoolId).set({ status: 'paused' }).where('id', '=', id).execute();
     return { ok: true };
   });
 
   app.get('/api/admin/plans/:id', guard, async (req) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('enroll_plans', id, schoolId);
     const q = req.query as any;
     const recordsPage = Math.max(1, num(q.recordsPage, 1));
     const recordsSize = Math.min(100, Math.max(5, num(q.recordsSize, 20)));
 
-    const plan = await db.selectFrom('enroll_plans').selectAll().where('id', '=', id).executeTakeFirst();
+    const plan = await db.selectFrom('enroll_plans').where('school_id', '=', schoolId).selectAll().where('id', '=', id).executeTakeFirst();
     if (!plan) throw new HttpError(404, 'NOT_FOUND', '计划不存在');
     const courses = await db
       .selectFrom('enroll_plan_courses as pc')
-      .innerJoin('courses as c', 'c.id', 'pc.course_id')
-      .leftJoin('teachers as t', 't.id', 'c.teacher_id')
+      .innerJoin('courses as c', 'c.id', 'pc.course_id').where('c.school_id', '=', schoolId)
+      .leftJoin('teachers as t', (join) => join.onRef('t.id', '=', 'c.teacher_id').on('t.school_id', '=', schoolId))
       .select([
         'pc.id',
         'pc.course_id',
@@ -96,6 +106,9 @@ export async function planRoutes(app: FastifyInstance) {
     const recordsTotalRow = pcIds.length
       ? await db
           .selectFrom('enroll_records')
+          .innerJoin('students as st', 'st.id', 'enroll_records.student_id').where('st.school_id', '=', schoolId)
+          .innerJoin('courses as record_course', 'record_course.id', 'enroll_records.course_id').where('record_course.school_id', '=', schoolId)
+          .innerJoin('enroll_plan_courses as valid_link', (join) => join.onRef('valid_link.id', '=', 'enroll_records.plan_course_id').onRef('valid_link.course_id', '=', 'enroll_records.course_id'))
           .select((e) => e.fn.countAll<number>().as('c'))
           .where('plan_course_id', 'in', pcIds)
           .executeTakeFirst()
@@ -104,9 +117,10 @@ export async function planRoutes(app: FastifyInstance) {
     const records = pcIds.length
       ? await db
           .selectFrom('enroll_records as r')
-          .innerJoin('students as s', 's.id', 'r.student_id')
-          .leftJoin('classes as cl', 'cl.id', 's.class_id')
-          .innerJoin('courses as c', 'c.id', 'r.course_id')
+          .innerJoin('enroll_plan_courses as valid_link', (join) => join.onRef('valid_link.id', '=', 'r.plan_course_id').onRef('valid_link.course_id', '=', 'r.course_id'))
+          .innerJoin('students as s', 's.id', 'r.student_id').where('s.school_id', '=', schoolId)
+          .leftJoin('classes as cl', (join) => join.onRef('cl.id', '=', 's.class_id').on('cl.school_id', '=', schoolId))
+          .innerJoin('courses as c', 'c.id', 'r.course_id').where('c.school_id', '=', schoolId)
           .select([
             'r.id',
             'r.status',
@@ -124,7 +138,7 @@ export async function planRoutes(app: FastifyInstance) {
       : [];
 
     const totalStudents = await db
-      .selectFrom('students')
+      .selectFrom('students').where('school_id', '=', schoolId)
       .select((e) => e.fn.countAll<number>().as('c'))
       .where('status', '=', 'active')
       .executeTakeFirst();
@@ -132,7 +146,9 @@ export async function planRoutes(app: FastifyInstance) {
     const effectiveCodesRows = pcIds.length
       ? await db
           .selectFrom('enroll_records as r')
-          .innerJoin('students as s', 's.id', 'r.student_id')
+          .innerJoin('enroll_plan_courses as valid_link', (join) => join.onRef('valid_link.id', '=', 'r.plan_course_id').onRef('valid_link.course_id', '=', 'r.course_id'))
+          .innerJoin('students as s', 's.id', 'r.student_id').where('s.school_id', '=', schoolId)
+          .innerJoin('courses as record_course', 'record_course.id', 'r.course_id').where('record_course.school_id', '=', schoolId)
           .select('s.code')
           .where('r.plan_course_id', 'in', pcIds)
           .where('r.status', '=', 'effective')
@@ -141,8 +157,8 @@ export async function planRoutes(app: FastifyInstance) {
     const effectiveCodes = new Set(effectiveCodesRows.map((r) => r.code));
 
     const unenrolledAll = await db
-      .selectFrom('students as s')
-      .leftJoin('classes as cl', 'cl.id', 's.class_id')
+      .selectFrom('students as s').where('s.school_id', '=', schoolId)
+      .leftJoin('classes as cl', (join) => join.onRef('cl.id', '=', 's.class_id').on('cl.school_id', '=', schoolId))
       .select(['s.id', 's.code', 's.name', 'cl.name as className'])
       .where('s.status', '=', 'active')
       .execute();
@@ -165,15 +181,18 @@ export async function planRoutes(app: FastifyInstance) {
 
   // 报名记录导出
   app.get('/api/admin/plans/:id/records/export', guard, async (req, reply) => {
+    const schoolId = schoolIdOf(req);
     const id = num((req.params as any).id);
+    await assertSchoolRow('enroll_plans', id, schoolId);
     const pcs = await db.selectFrom('enroll_plan_courses').select('id').where('plan_id', '=', id).execute();
     const pcIds = pcs.map((p) => p.id);
     const rows = pcIds.length
       ? await db
           .selectFrom('enroll_records as r')
-          .innerJoin('students as s', 's.id', 'r.student_id')
-          .leftJoin('classes as cl', 'cl.id', 's.class_id')
-          .innerJoin('courses as c', 'c.id', 'r.course_id')
+          .innerJoin('enroll_plan_courses as valid_link', (join) => join.onRef('valid_link.id', '=', 'r.plan_course_id').onRef('valid_link.course_id', '=', 'r.course_id'))
+          .innerJoin('students as s', 's.id', 'r.student_id').where('s.school_id', '=', schoolId)
+          .leftJoin('classes as cl', (join) => join.onRef('cl.id', '=', 's.class_id').on('cl.school_id', '=', schoolId))
+          .innerJoin('courses as c', 'c.id', 'r.course_id').where('c.school_id', '=', schoolId)
           .select([
             's.code',
             's.name as studentName',

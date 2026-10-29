@@ -22,6 +22,13 @@ function pick(v: string | number | null) {
   emit('update:modelValue', v);
   open.value = false;
 }
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || !open.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  open.value = false;
+  root.value?.querySelector<HTMLButtonElement>('button')?.focus();
+}
 function onDocClick(e: MouseEvent) {
   if (root.value && !root.value.contains(e.target as Node)) open.value = false;
 }
@@ -30,12 +37,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick));
 </script>
 
 <template>
-  <div ref="root" class="relative">
+  <div ref="root" class="relative" @keydown="onKeydown">
     <button
       type="button"
       class="select flex items-center justify-between gap-2 text-left"
       :class="{ 'opacity-50': disabled }"
-      :disabled="disabled"
+      :disabled="disabled" :aria-expanded="open"
       @click="open = !open"
     >
       <span class="truncate" :class="isEmpty ? 'text-ink-3' : ''">{{ current }}</span>

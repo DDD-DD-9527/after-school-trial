@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { api } from '../../lib/api';
 import { toast } from '../../lib/toast';
 import Modal from '../../ui/Modal.vue';
+import AppIcon from '../../ui/AppIcon.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -13,11 +14,18 @@ const showChange = ref(false);
 const changeMode = ref<'cancel' | 'reschedule'>('cancel');
 const current = ref<any>(null);
 const form = ref({ date: '', startTime: '', endTime: '', reason: '' });
+const loading = ref(false);
+const error = ref('');
 
 async function load() {
+  loading.value = true;
+  error.value = '';
+  try {
   const id = route.params.id;
   data.value = await api.get(`/api/admin/courses/${id}`);
   sessions.value = await api.get(`/api/admin/sessions?courseId=${id}`);
+  } catch (e: any) { error.value = e.message || '课程安排加载失败'; }
+  finally { loading.value = false; }
 }
 onMounted(load);
 
@@ -61,35 +69,35 @@ async function submitChange() {
 </script>
 
 <template>
-  <div v-if="data">
-    <div class="mb-4 flex items-center gap-3">
-      <button class="btn btn-ghost btn-sm" @click="router.push('/admin/courses')">← 返回</button>
-      <div class="text-[20px] font-semibold">{{ data.name }}</div>
-      <span class="badge badge-blue">{{ data.term }}</span>
-      <div class="ml-auto flex gap-2">
-        <button class="btn btn-secondary btn-sm" @click="goSchedule">排课</button>
-      </div>
+  <div>
+    <button class="btn btn-ghost btn-sm mb-3" @click="router.push('/admin/courses')"><AppIcon name="arrow-left" :size="15" />返回课程</button>
+    <div v-if="loading && !data" class="card py-14 text-center text-[13px] text-ink-3" role="status">正在加载课程详情…</div>
+    <div v-if="error" class="card mb-4 flex flex-wrap items-center justify-between gap-3 p-5 text-[13px]" role="alert"><span class="text-danger">{{ error }}</span><button class="btn btn-secondary btn-sm" @click="load">重新加载</button></div>
+    <template v-if="data">
+    <div class="page-heading">
+      <div><div class="eyebrow">课程详情 · {{ data.term }}</div><h1 class="page-title">{{ data.name }}</h1><p class="page-description">查看课程报名与具体课次，维护上课安排和变更。</p></div>
+      <button class="btn btn-primary" @click="goSchedule"><AppIcon name="calendar" :size="17" />为课程排课</button>
     </div>
 
     <div class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <div class="card card-pad"><div class="text-[13px] text-ink-2">已报名</div><div class="text-[24px] font-semibold">{{ data.enrolled }} / {{ data.capacity }}</div></div>
-      <div class="card card-pad"><div class="text-[13px] text-ink-2">课次</div><div class="text-[24px] font-semibold">{{ data.sessionCount }}</div></div>
-      <div class="card card-pad"><div class="text-[13px] text-ink-2">费用</div><div class="text-[24px] font-semibold">{{ yuan(data.price_cents) }}</div></div>
-      <div class="card card-pad"><div class="text-[13px] text-ink-2">授课教师</div><div class="text-[24px] font-semibold">{{ data.teacherName || '—' }}</div></div>
+      <div class="metric-card"><div class="text-[13px] text-ink-2">已报名 / 课程容量</div><div class="mt-3 text-[26px] font-semibold">{{ data.enrolled }} <span class="text-[15px] font-normal text-ink-3">/ {{ data.capacity }} 人</span></div></div>
+      <div class="metric-card"><div class="text-[13px] text-ink-2">已排课次</div><div class="mt-3 text-[26px] font-semibold">{{ data.sessionCount }} <span class="text-[13px] font-normal text-ink-3">节</span></div></div>
+      <div class="metric-card"><div class="text-[13px] text-ink-2">课程费用</div><div class="mt-3 text-[26px] font-semibold text-brand">{{ yuan(data.price_cents) }}</div></div>
+      <div class="metric-card"><div class="text-[13px] text-ink-2">授课教师</div><div class="mt-3 text-[22px] font-semibold">{{ data.teacherName || '待分配' }}</div></div>
     </div>
 
     <div class="card mb-4 card-pad">
-      <div class="mb-2 text-[15px] font-medium">课程信息</div>
+      <h2 class="section-title mb-3">课程信息</h2>
       <p class="text-[14px] text-ink-2">{{ data.description || '暂无简介' }}</p>
       <p class="mt-2 text-[13px] text-ink-3">退课规则：{{ data.refund_note || '未设置' }}</p>
     </div>
 
     <div class="card">
       <div class="flex items-center justify-between border-b border-line px-4 py-3">
-        <div class="text-[15px] font-medium">课次安排</div>
+        <div><h2 class="section-title">课次安排</h2><p class="section-subtitle">调课、停课前请核实教师考勤事实。</p></div>
         <div class="text-[13px] text-ink-3">共 {{ sessions.length }} 节</div>
       </div>
-      <table class="table-base">
+      <div class="overflow-x-auto"><table class="table-base min-w-[820px]">
         <thead><tr><th>日期</th><th>星期</th><th>时间</th><th>教学班</th><th>地点</th><th>状态</th><th></th></tr></thead>
         <tbody>
           <tr v-for="s in sessions" :key="s.id">
@@ -100,7 +108,7 @@ async function submitChange() {
             <td class="text-ink-2">{{ s.room || '—' }}</td>
             <td>
               <span class="badge" :class="s.status === 'done' ? 'badge-green' : s.status === 'cancelled' ? 'badge-red' : 'badge-gray'">
-                {{ s.status === 'done' ? '已完成' : s.status === 'cancelled' ? '已停课' : '待上课' }}
+                {{ s.status === 'done' ? '点名已提交' : s.status === 'cancelled' ? '已停课' : '已排课' }}
               </span>
             </td>
             <td class="whitespace-nowrap text-right">
@@ -113,7 +121,7 @@ async function submitChange() {
           </tr>
           <tr v-if="!sessions.length"><td colspan="7" class="py-10 text-center text-ink-3">还没有排课</td></tr>
         </tbody>
-      </table>
+      </table></div>
     </div>
 
     <Modal
@@ -143,5 +151,6 @@ async function submitChange() {
         </button>
       </template>
     </Modal>
+    </template>
   </div>
 </template>
